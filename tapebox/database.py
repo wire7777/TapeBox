@@ -1267,3 +1267,136 @@ def restore_catalog(backup_path):
         "tapes": validation["tapes"],
         "files": validation["files"],
     }
+
+
+def search_files(query):
+    """
+    Search the TapeBox catalog by filename or path.
+
+    Searches:
+      - filename
+      - original_path
+      - relative_path
+      - tape_path
+    """
+
+    query = str(query).strip()
+
+    if not query:
+        return []
+
+    pattern = f"%{query}%"
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                files.id,
+                files.filename,
+                files.original_path,
+                files.relative_path,
+                files.size_bytes,
+                files.checksum_sha256,
+                files.tape_path,
+                files.is_spanned,
+                files.archived_at,
+                files.verified_at,
+                tapes.id AS tape_id,
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+            FROM files
+            LEFT JOIN tapes
+                ON tapes.id = files.tape_id
+            WHERE
+                files.filename LIKE ? COLLATE NOCASE
+                OR files.original_path LIKE ? COLLATE NOCASE
+                OR files.relative_path LIKE ? COLLATE NOCASE
+                OR files.tape_path LIKE ? COLLATE NOCASE
+            ORDER BY
+                files.filename COLLATE NOCASE,
+                files.id
+            """,
+            (
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+            ),
+        ).fetchall()
+
+
+def get_archive_restore_plan(job_id):
+    """
+    Return the files and cartridges required to restore an archive job.
+    """
+
+    with connect() as db:
+        job = db.execute(
+            """
+            SELECT
+                id,
+                source_path,
+                status,
+                total_files,
+                total_bytes,
+                bytes_written,
+                started_at,
+                completed_at,
+                error
+            FROM archive_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+
+        if job is None:
+            return None
+
+        rows = db.execute(
+            """
+            SELECT
+                files.id,
+                files.archive_job_id,
+                files.filename,
+                files.relative_path,
+                files.size_bytes,
+                files.checksum_sha256,
+                files.tape_path,
+                files.is_spanned,
+                tapes.id AS tape_id,
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+            FROM files
+            LEFT JOIN tapes
+                ON tapes.id = files.tape_id
+            WHERE files.archive_job_id = ?
+            ORDER BY
+                tapes.label COLLATE NOCASE,
+                files.relative_path COLLATE NOCASE,
+                files.id
+            """,
+            (job_id,),
+        ).fetchall()
+
+    files = [
+        dict(row)
+        for row in rows
+    ]
+
+    tapes = []
+
+    for row in files:
+        tape = {
+            "tape_id": row["tape_id"],
+            "tape_label": row["tape_label"],
+            "ltfs_uuid": row["ltfs_uuid"],
+        }
+
+        if tape not in tapes:
+            tapes.append(tape)
+
+    return {
+        "job": dict(job),
+        "files": files,
+        "tapes": tapes,
+    }

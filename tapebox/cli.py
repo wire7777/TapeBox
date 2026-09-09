@@ -7,7 +7,10 @@ from tapebox.archive import (
     resume_archive_job,
 )
 from tapebox.verify import verify_file
-from tapebox.restore import restore_file
+from tapebox.restore import (
+    restore_file,
+    restore_archive_job,
+)
 from tapebox.recovery import import_loaded_tape
 
 from tapebox.tape import (
@@ -25,6 +28,7 @@ from tapebox.database import (
     list_files,
     search_files,
     list_archive_jobs,
+    get_archive_restore_plan,
     backup_catalog,
     validate_catalog_database,
     restore_catalog,
@@ -1223,6 +1227,188 @@ def cmd_file_restore(args):
     print()
 
 
+
+def cmd_archive_restore_plan(args):
+    """
+    Show what is required to restore an archive job.
+    """
+
+    initialize_database()
+
+    plan = get_archive_restore_plan(
+        args.job_id
+    )
+
+    print()
+    print("TapeBox Restore Plan")
+    print("-" * 80)
+
+    if plan is None:
+        print(
+            f"Job               {args.job_id}"
+        )
+        print("Status            FAILED")
+        print(
+            "Error             "
+            "Archive job does not exist."
+        )
+        print()
+        return
+
+    job = plan["job"]
+    files = plan["files"]
+    tapes = plan["tapes"]
+
+    print(
+        f"Job               {job['id']}"
+    )
+    print(
+        f"Source            {job['source_path']}"
+    )
+    print(
+        f"Archive Status    {job['status']}"
+    )
+    print(
+        f"Files             {len(files)}"
+    )
+    print(
+        f"Required Tapes    {len(tapes)}"
+    )
+
+    print()
+    print("CARTRIDGES")
+    print("-" * 80)
+
+    for tape in tapes:
+        print(
+            f"{tape['tape_label'] or 'UNKNOWN':<16}"
+            f"{tape['ltfs_uuid'] or '-'}"
+        )
+
+    print()
+    print("FILES")
+    print("-" * 80)
+
+    for row in files:
+        print(
+            f"{row['id']:<6}"
+            f"{(row['tape_label'] or 'UNKNOWN'):<14}"
+            f"{format_bytes(row['size_bytes']):<14}"
+            f"{row['relative_path']}"
+        )
+
+    print()
+    print("Status            READY")
+    print()
+
+
+
+def cmd_archive_restore(args):
+    """
+    Restore an archived job from one or more tapes.
+    """
+
+    initialize_database()
+
+    result = restore_archive_job(
+        args.job_id,
+        args.destination,
+    )
+
+    print()
+    print("TapeBox Archive Restore")
+    print("-" * 70)
+
+    if not result.get("success"):
+        print("Status            FAILED")
+
+        if result.get("loaded_tape"):
+            print(
+                f"Loaded Tape       "
+                f"{result['loaded_tape']}"
+            )
+
+        if result.get("required_tapes"):
+            print(
+                "Required Tape(s)   "
+                + ", ".join(
+                    result["required_tapes"]
+                )
+            )
+
+        print(
+            f"Error             "
+            f"{result.get('error', 'Unknown error')}"
+        )
+
+        print()
+        return
+
+    print(
+        f"Job               "
+        f"{result['job_id']}"
+    )
+
+    print(
+        f"Destination       "
+        f"{result['destination']}"
+    )
+
+    if result.get("loaded_tape"):
+        print(
+            f"This Tape         "
+            f"{result['loaded_tape']}"
+        )
+
+    print(
+        f"Files             "
+        f"{result['files_completed']}"
+        f"/{result['files_total']}"
+    )
+
+    print(
+        f"Restored Now      "
+        f"{result['files_restored_this_run']}"
+    )
+
+    print(
+        f"Already Present   "
+        f"{result['files_skipped']}"
+    )
+
+    print(
+        f"Written Now       "
+        f"{format_bytes(result['bytes_restored_this_run'])}"
+    )
+
+    print()
+
+    if result.get("completed"):
+        print("Status            COMPLETE")
+
+    else:
+        print("Status            NEED NEXT TAPE")
+
+        required = result.get(
+            "required_tapes",
+            [],
+        )
+
+        if required:
+            print(
+                "Next Tape(s)      "
+                + ", ".join(required)
+            )
+
+        print()
+        print(
+            "Load the requested cartridge and run "
+            "the same command again."
+        )
+
+    print()
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="tapebox",
@@ -1523,6 +1709,50 @@ def build_parser():
 
     archive_jobs.set_defaults(
         func=cmd_archive_jobs,
+    )
+
+    archive_restore_plan = (
+        archive_sub.add_parser(
+            "restore-plan",
+            help=(
+                "Show cartridges required to restore an archive job"
+            ),
+        )
+    )
+
+    archive_restore_plan.add_argument(
+        "job_id",
+        type=int,
+        help="Archive job ID",
+    )
+
+    archive_restore_plan.set_defaults(
+        func=cmd_archive_restore_plan,
+    )
+
+
+    archive_restore = (
+        archive_sub.add_parser(
+            "restore",
+            help=(
+                "Restore an archive job from tape"
+            ),
+        )
+    )
+
+    archive_restore.add_argument(
+        "job_id",
+        type=int,
+        help="Archive job ID",
+    )
+
+    archive_restore.add_argument(
+        "destination",
+        help="Restore destination directory",
+    )
+
+    archive_restore.set_defaults(
+        func=cmd_archive_restore,
     )
 
     #
