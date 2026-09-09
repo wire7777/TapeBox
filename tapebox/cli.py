@@ -2,7 +2,7 @@ import argparse
 import re
 import sqlite3
 
-from tapebox.archive import archive_file
+from tapebox.archive import archive_path
 from tapebox.verify import verify_file
 
 from tapebox.tape import (
@@ -593,7 +593,7 @@ def cmd_drive_status(args):
 def cmd_archive_add(args):
     initialize_database()
 
-    result = archive_file(
+    result = archive_path(
         args.path
     )
 
@@ -616,10 +616,21 @@ def cmd_archive_add(args):
     print("Archive Complete")
     print("-" * 40)
 
-    print(
-        f"{'File':<16}"
-        f"{result['filename']}"
-    )
+    if result.get("folder"):
+        print(
+            f"{'Folder':<16}"
+            f"{result['folder']}"
+        )
+
+        print(
+            f"{'Files':<16}"
+            f"{result['file_count']}"
+        )
+    else:
+        print(
+            f"{'File':<16}"
+            f"{result['filename']}"
+        )
 
     print(
         f"{'Size':<16}"
@@ -636,15 +647,21 @@ def cmd_archive_add(args):
         f"{result['tape_path']}"
     )
 
-    print(
-        f"{'SHA256':<16}"
-        f"{result['sha256']}"
-    )
+    if result.get("folder"):
+        print(
+            f"{'Catalog Files':<16}"
+            f"{len(result.get('database_ids', []))}"
+        )
+    else:
+        print(
+            f"{'SHA256':<16}"
+            f"{result['sha256']}"
+        )
 
-    print(
-        f"{'Database ID':<16}"
-        f"{result['file_id']}"
-    )
+        print(
+            f"{'Database ID':<16}"
+            f"{result['file_id']}"
+        )
 
     print()
 
@@ -921,14 +938,14 @@ def build_parser():
         archive_sub.add_parser(
             "add",
             help=(
-                "Archive one file to the loaded tape"
+                "Archive a file or folder to the loaded tape"
             ),
         )
     )
 
     archive_add.add_argument(
         "path",
-        help="Path to file to archive",
+        help="Path to file or folder to archive",
     )
 
     archive_add.set_defaults(

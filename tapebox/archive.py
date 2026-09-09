@@ -376,3 +376,410 @@ def archive_file(source_path):
         "ltfs_uuid": ltfs_uuid,
         "tape_path": final_destination,
     }
+
+def archive_folder(source_path):
+    """
+    Archive one complete directory tree to the loaded LTFS tape.
+
+    This first folder implementation requires the complete folder to fit
+    on the currently loaded tape. Multi-tape continuation will be added
+    separately.
+    """
+
+    import shutil
+
+    source = Path(source_path).expanduser().resolve()
+
+    if not source.exists():
+        return {
+            "success": False,
+            "error": f"Source does not exist: {source}",
+        }
+
+    if not source.is_dir():
+        return {
+            "success": False,
+            "error": f"Source is not a directory: {source}",
+        }
+
+    files = []
+
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            return {
+                "success": False,
+                "error": (
+                    "Symbolic links are not supported yet: "
+                    f"{path}"
+                ),
+            }
+
+        if path.is_file():
+            files.append(path)
+
+    if not files:
+        return {
+            "success": False,
+            "error": "Folder contains no regular files.",
+        }
+
+    total_bytes = sum(
+        path.stat().st_size
+        for path in files
+    )
+
+    drives = discover_drives()
+
+    if not drives:
+        return {
+            "success": False,
+            "error": "No tape drive detected.",
+        }
+
+    if len(drives) > 1:
+        return {
+            "success": False,
+            "error": (
+                "More than one tape drive detected. "
+                "Drive selection is not implemented yet."
+            ),
+        }
+
+    drive = drives[0]
+
+    nst_device = drive.get("nst_device")
+    sg_device = drive.get("sg_device")
+
+    if not nst_device or not sg_device:
+        return {
+            "success": False,
+            "error": "Tape drive device mapping is incomplete.",
+        }
+
+    status = get_tape_status(nst_device)
+
+    if not status.get("available"):
+        return {
+            "success": False,
+            "error": (
+                status.get("error")
+                or "Tape cartridge is not available."
+            ),
+        }
+
+    if not status.get("online"):
+        return {
+            "success": False,
+            "error": "Tape cartridge is not online.",
+        }
+
+    if status.get("write_protected"):
+        return {
+            "success": False,
+            "error": "Loaded tape is write protected.",
+        }
+
+    ARCHIVE_MOUNTPOINT.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if _is_mounted(ARCHIVE_MOUNTPOINT):
+        return {
+            "success": False,
+            "error": (
+                "TapeBox LTFS mount point is already mounted: "
+                f"{ARCHIVE_MOUNTPOINT}"
+            ),
+        }
+
+    mount_result = run_command(
+        [
+            "ltfs",
+            str(ARCHIVE_MOUNTPOINT),
+            "-o",
+            f"devname={sg_device}",
+        ],
+        timeout=120,
+    )
+
+    if not _is_mounted(ARCHIVE_MOUNTPOINT):
+        return {
+            "success": False,
+            "error": (
+                mount_result.get("stderr")
+                or mount_result.get("stdout")
+                or "LTFS mount failed."
+            ),
+        }
+
+    result = None
+    catalog_records = []
+
+    try:
+        loaded_uuid = get_ltfs_virtual_attribute(
+            ARCHIVE_MOUNTPOINT,
+            "ltfs.volumeUUID",
+        )
+
+        loaded_name = get_ltfs_virtual_attribute(
+            ARCHIVE_MOUNTPOINT,
+            "ltfs.volumeName",
+        )
+
+        if not loaded_uuid:
+            raise RuntimeError(
+                "Could not read LTFS volume UUID."
+            )
+
+        tape = get_tape_by_uuid(
+            loaded_uuid
+        )
+
+        if tape is None:
+            raise RuntimeError(
+                "Loaded tape is not registered in TapeBox. "
+                f"Volume={loaded_name or '-'} "
+                f"UUID={loaded_uuid}"
+            )
+
+        usage = shutil.disk_usage(
+            ARCHIVE_MOUNTPOINT
+        )
+
+        if total_bytes > usage.free:
+            raise RuntimeError(
+                "Folder does not fit on the loaded tape. "
+                f"Need {total_bytes} bytes, "
+                f"but only {usage.free} bytes are free. "
+                "Multi-tape folder continuation is not implemented yet."
+            )
+
+        archive_root = (
+            ARCHIVE_MOUNTPOINT
+            / "archive"
+        )
+
+        archive_root.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        destination_root = (
+            archive_root
+            / source.name
+        )
+
+        if destination_root.exists():
+            raise FileExistsError(
+                "Destination folder already exists on tape: "
+                f"/archive/{source.name}"
+            )
+
+        destination_root.mkdir(
+            parents=True,
+            exist_ok=False,
+        )
+
+        copied_bytes = 0
+
+        for index, source_file in enumerate(
+            files,
+            start=1,
+        ):
+            relative = source_file.relative_to(
+                source
+            )
+
+            destination = (
+                destination_root
+                / relative
+            )
+
+            destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            temp_destination = (
+                destination.parent
+                / (
+                    ".tapebox-partial-"
+                    + destination.name
+                )
+            )
+
+            if temp_destination.exists():
+                temp_destination.unlink()
+
+            digest = hashlib.sha256()
+            source_size = source_file.stat().st_size
+
+            with open(source_file, "rb") as src:
+                with open(temp_destination, "wb") as dst:
+                    while True:
+                        chunk = src.read(
+                            COPY_BUFFER_SIZE
+                        )
+
+                        if not chunk:
+                            break
+
+                        dst.write(chunk)
+                        digest.update(chunk)
+                        copied_bytes += len(chunk)
+
+                    dst.flush()
+                    os.fsync(
+                        dst.fileno()
+                    )
+
+            copied_size = (
+                temp_destination.stat().st_size
+            )
+
+            if copied_size != source_size:
+                raise RuntimeError(
+                    "Copied size mismatch for "
+                    f"{source_file}: "
+                    f"source={source_size}, "
+                    f"tape={copied_size}"
+                )
+
+            temp_destination.rename(
+                destination
+            )
+
+            tape_path = (
+                "/archive/"
+                + source.name
+                + "/"
+                + relative.as_posix()
+            )
+
+            catalog_records.append(
+                {
+                    "original_path": str(
+                        source_file
+                    ),
+                    "relative_path": (
+                        source.name
+                        + "/"
+                        + relative.as_posix()
+                    ),
+                    "filename": source_file.name,
+                    "size_bytes": source_size,
+                    "sha256": digest.hexdigest(),
+                    "tape_id": tape["id"],
+                    "tape_path": tape_path,
+                }
+            )
+
+            print(
+                f"[{index}/{len(files)}] "
+                f"{relative} "
+                f"({source_size} bytes)"
+            )
+
+        sync_result = run_command(
+            ["sync"],
+            timeout=120,
+        )
+
+        if sync_result.get("returncode") not in (
+            None,
+            0,
+        ):
+            raise RuntimeError(
+                sync_result.get("stderr")
+                or "sync failed"
+            )
+
+        result = {
+            "success": True,
+            "folder": source.name,
+            "source_path": str(source),
+            "file_count": len(files),
+            "size_bytes": total_bytes,
+            "bytes_written": copied_bytes,
+            "tape_label": tape["label"],
+            "tape_uuid": loaded_uuid,
+            "tape_id": tape["id"],
+            "tape_path": (
+                f"/archive/{source.name}"
+            ),
+        }
+
+    except Exception as exc:
+        result = {
+            "success": False,
+            "error": str(exc),
+        }
+
+    finally:
+        unmounted, unmount_error = _unmount_ltfs(
+            ARCHIVE_MOUNTPOINT
+        )
+
+        if not unmounted:
+            result = {
+                "success": False,
+                "error": (
+                    "LTFS unmount failed after folder archive: "
+                    f"{unmount_error}"
+                ),
+            }
+
+    if not result.get("success"):
+        return result
+
+    database_ids = []
+
+    try:
+        for record in catalog_records:
+            file_id = record_archived_file(
+                record["original_path"],
+                record["relative_path"],
+                record["filename"],
+                record["size_bytes"],
+                record["sha256"],
+                record["tape_id"],
+                record["tape_path"],
+            )
+
+            database_ids.append(
+                file_id
+            )
+
+    except Exception as exc:
+        return {
+            "success": False,
+            "tape_write_succeeded": True,
+            "error": (
+                "Folder was written to tape, but catalog "
+                f"update failed: {exc}"
+            ),
+        }
+
+    result["database_ids"] = database_ids
+
+    return result
+
+
+def archive_path(source_path):
+    """
+    Archive either one regular file or one directory tree.
+    """
+
+    source = Path(
+        source_path
+    ).expanduser()
+
+    if source.is_dir():
+        return archive_folder(
+            source
+        )
+
+    return archive_file(
+        source
+    )
