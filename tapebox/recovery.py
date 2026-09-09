@@ -320,6 +320,134 @@ def import_loaded_tape(
                     f"{index}: {entry['tape_path']}"
                 )
 
+        #
+        # Spanned parts were added after the original manifest
+        # format. Missing spanned_parts means an older TapeBox
+        # manifest with no oversized-file parts.
+        #
+        spanned_parts = manifest.get(
+            "spanned_parts",
+            [],
+        )
+
+        if not isinstance(
+            spanned_parts,
+            list,
+        ):
+            raise RuntimeError(
+                "manifest.json spanned_parts field "
+                "is not a list."
+            )
+
+        declared_part_count = manifest.get(
+            "spanned_part_count"
+        )
+
+        if (
+            declared_part_count is not None
+            and int(declared_part_count)
+            != len(spanned_parts)
+        ):
+            raise RuntimeError(
+                "manifest.json spanned_part_count does "
+                "not match the spanned_parts list."
+            )
+
+        required_part_fields = (
+            "relative_path",
+            "filename",
+            "file_size_bytes",
+            "file_sha256",
+            "part_number",
+            "part_size_bytes",
+            "part_sha256",
+            "tape_path",
+        )
+
+        for index, entry in enumerate(
+            spanned_parts,
+            start=1,
+        ):
+            if not isinstance(
+                entry,
+                dict,
+            ):
+                raise RuntimeError(
+                    f"Manifest spanned part entry "
+                    f"{index} is invalid."
+                )
+
+            missing = [
+                field
+                for field in required_part_fields
+                if field not in entry
+            ]
+
+            if missing:
+                raise RuntimeError(
+                    f"Manifest spanned part entry "
+                    f"{index} is missing: "
+                    + ", ".join(missing)
+                )
+
+            if not str(
+                entry["tape_path"]
+            ).startswith("/archive/"):
+                raise RuntimeError(
+                    f"Unsafe tape path in spanned part "
+                    f"{index}: {entry['tape_path']}"
+                )
+
+            if int(
+                entry["file_size_bytes"]
+            ) <= 0:
+                raise RuntimeError(
+                    f"Invalid whole-file size in spanned "
+                    f"part {index}."
+                )
+
+            if int(
+                entry["part_size_bytes"]
+            ) <= 0:
+                raise RuntimeError(
+                    f"Invalid part size in spanned "
+                    f"part {index}."
+                )
+
+            if int(
+                entry["part_number"]
+            ) <= 0:
+                raise RuntimeError(
+                    f"Invalid part number in spanned "
+                    f"part {index}."
+                )
+
+            if int(
+                entry["part_size_bytes"]
+            ) > int(
+                entry["file_size_bytes"]
+            ):
+                raise RuntimeError(
+                    f"Spanned part {index} is larger "
+                    "than its parent file."
+                )
+
+            if not str(
+                entry["file_sha256"]
+            ).strip():
+                raise RuntimeError(
+                    f"Spanned part {index} is missing "
+                    "the whole-file SHA256."
+                )
+
+            if not str(
+                entry["part_sha256"]
+            ).strip():
+                raise RuntimeError(
+                    f"Spanned part {index} is missing "
+                    "its part SHA256."
+                )
+
     except Exception as exc:
         read_error = str(exc)
 
