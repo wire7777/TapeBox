@@ -873,6 +873,8 @@ def archive_folder_job(source_path, job_id=None):
             job_id
         )
 
+        previous_job_status = "new"
+
     else:
         job = get_archive_job(
             job_id
@@ -898,6 +900,8 @@ def archive_folder_job(source_path, job_id=None):
                 "bytes_written": job["bytes_written"],
                 "message": "Archive job is already complete.",
             }
+
+        previous_job_status = job["status"]
 
         stored_source = Path(
             job["source_path"]
@@ -1131,6 +1135,32 @@ def archive_folder_job(source_path, job_id=None):
                 f"UUID={loaded_uuid}"
             )
 
+        # Never reuse a cartridge that already contains files
+        # from this archive job. The catalog is the authority here,
+        # not the current job status.
+        used_tape_ids = {
+            row["tape_id"]
+            for row in completed_rows
+            if row["tape_id"] is not None
+        }
+
+        if tape["id"] in used_tape_ids:
+            result = {
+                "success": False,
+                "needs_next_tape": True,
+                "same_tape": True,
+                "error": (
+                    "This archive job requires a different "
+                    "cartridge. The loaded tape "
+                    f"{tape['label']} has already been used by "
+                    f"job {job_id}."
+                ),
+            }
+
+            raise RuntimeError(
+                "__TAPEBOX_NEED_DIFFERENT_TAPE__"
+            )
+
         archive_root = (
             ARCHIVE_MOUNTPOINT
             / "archive"
@@ -1181,6 +1211,33 @@ def archive_folder_job(source_path, job_id=None):
                 usage.free
                 - TAPE_FREE_RESERVE_BYTES,
             )
+
+            test_usable = os.environ.get(
+                "TAPEBOX_TEST_USABLE_BYTES"
+            )
+
+            if test_usable is not None:
+                try:
+                    test_capacity = int(
+                        test_usable
+                    )
+                except ValueError:
+                    raise RuntimeError(
+                        "TAPEBOX_TEST_USABLE_BYTES "
+                        "must be an integer."
+                    )
+
+                if test_capacity < 0:
+                    raise RuntimeError(
+                        "TAPEBOX_TEST_USABLE_BYTES "
+                        "cannot be negative."
+                    )
+
+                usable_free = max(
+                    0,
+                    test_capacity
+                    - copied_this_tape,
+                )
 
             if source_size > usable_free:
                 needs_next_tape = True
@@ -1323,10 +1380,11 @@ def archive_folder_job(source_path, job_id=None):
         }
 
     except Exception as exc:
-        result = {
-            "success": False,
-            "error": str(exc),
-        }
+        if str(exc) != "__TAPEBOX_NEED_DIFFERENT_TAPE__":
+            result = {
+                "success": False,
+                "error": str(exc),
+            }
 
     finally:
         unmounted, unmount_error = _unmount_ltfs(
@@ -1343,9 +1401,21 @@ def archive_folder_job(source_path, job_id=None):
             }
 
     if not result.get("success"):
+        # If the job was already waiting for another cartridge,
+        # a transient failure such as EBUSY must not destroy that
+        # state. Otherwise a retry could incorrectly reuse the
+        # cartridge that was just filled.
+        if (
+            result.get("needs_next_tape")
+            or previous_job_status == "waiting_for_tape"
+        ):
+            failure_status = "waiting_for_tape"
+        else:
+            failure_status = "error"
+
         update_archive_job(
             job_id,
-            status="error",
+            status=failure_status,
             bytes_written=previous_bytes,
             error=result.get(
                 "error",
