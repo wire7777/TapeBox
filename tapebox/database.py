@@ -72,7 +72,6 @@ def initialize_database():
                 total_files INTEGER DEFAULT 0,
                 total_bytes INTEGER DEFAULT 0,
                 bytes_written INTEGER DEFAULT 0,
-                created_at TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT,
                 error TEXT
@@ -85,12 +84,12 @@ def initialize_database():
                 relative_path TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
-                sha256 TEXT,
+                checksum_sha256 TEXT,
                 tape_id INTEGER,
                 tape_path TEXT,
                 is_spanned INTEGER NOT NULL DEFAULT 0,
-                archived_at TEXT NOT NULL,
-                restored_at TEXT,
+                archived_at TEXT,
+                verified_at TEXT,
 
                 FOREIGN KEY (archive_job_id)
                     REFERENCES archive_jobs(id),
