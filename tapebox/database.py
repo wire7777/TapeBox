@@ -443,6 +443,7 @@ def record_archived_file(
     sha256,
     tape_id,
     tape_path,
+    archive_job_id=None,
 ):
     """
     Record a successfully archived single file.
@@ -452,6 +453,7 @@ def record_archived_file(
         cursor = db.execute(
             """
             INSERT INTO files (
+                archive_job_id,
                 original_path,
                 relative_path,
                 filename,
@@ -462,9 +464,10 @@ def record_archived_file(
                 is_spanned,
                 archived_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
+                archive_job_id,
                 original_path,
                 relative_path,
                 filename,
@@ -557,3 +560,155 @@ def mark_file_verified(file_id):
                 file_id,
             ),
         )
+
+
+def create_archive_job(
+    source_path,
+    total_files,
+    total_bytes,
+):
+    """
+    Create a resumable archive job.
+    """
+
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO archive_jobs (
+                source_path,
+                status,
+                total_files,
+                total_bytes,
+                bytes_written,
+                started_at
+            )
+            VALUES (?, 'running', ?, ?, 0, ?)
+            """,
+            (
+                source_path,
+                total_files,
+                total_bytes,
+                utc_now(),
+            ),
+        )
+
+        return cursor.lastrowid
+
+
+def get_archive_job(job_id):
+    """
+    Return one archive job.
+    """
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                id,
+                source_path,
+                status,
+                total_files,
+                total_bytes,
+                bytes_written,
+                started_at,
+                completed_at,
+                error
+            FROM archive_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+
+
+def get_archive_job_files(job_id):
+    """
+    Return files already completed by an archive job.
+    """
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                id,
+                relative_path,
+                filename,
+                size_bytes,
+                checksum_sha256,
+                tape_id,
+                tape_path
+            FROM files
+            WHERE archive_job_id = ?
+            ORDER BY id
+            """,
+            (job_id,),
+        ).fetchall()
+
+
+def update_archive_job(
+    job_id,
+    status=None,
+    bytes_written=None,
+    completed=False,
+    error=None,
+):
+    """
+    Update archive job progress/state.
+    """
+
+    fields = []
+    values = []
+
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+
+    if bytes_written is not None:
+        fields.append("bytes_written = ?")
+        values.append(bytes_written)
+
+    if completed:
+        fields.append("completed_at = ?")
+        values.append(utc_now())
+
+    if error is not None:
+        fields.append("error = ?")
+        values.append(error)
+
+    if not fields:
+        return
+
+    values.append(job_id)
+
+    with connect() as db:
+        db.execute(
+            f"""
+            UPDATE archive_jobs
+            SET {", ".join(fields)}
+            WHERE id = ?
+            """,
+            values,
+        )
+
+
+def list_archive_jobs():
+    """
+    Return archive jobs newest first.
+    """
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                id,
+                source_path,
+                status,
+                total_files,
+                total_bytes,
+                bytes_written,
+                started_at,
+                completed_at,
+                error
+            FROM archive_jobs
+            ORDER BY id DESC
+            """
+        ).fetchall()
