@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+
+{% block title %}
+Dashboard · TapeBox
+{% endblock %}
+
+
+{% block content %}
+
+<div class="page-header">
+
+    <div>
+        <h1>Dashboard</h1>
+
+        <p>
+            LTFS tape archive overview
+        </p>
+    </div>
+
+    <div
+        class="status-pill
+        {% if drive.online %}
+            status-good
+        {% else %}
+            status-muted
+        {% endif %}
+        "
+    >
+
+        <span class="status-dot"></span>
+
+        {% if drive.online %}
+            Cartridge Online
+        {% elif drive.detected %}
+            Drive Ready
+        {% else %}
+            Drive Offline
+        {% endif %}
+
+    </div>
+
+</div>
+
+
+<div class="cards">
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Tapes
+        </div>
+
+        <div class="stat-value">
+            {{ tape_count }}
+        </div>
+
+        <div class="stat-detail">
+            {{ total_capacity | format_bytes }}
+            total capacity
+        </div>
+
+    </div>
+
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Files
+        </div>
+
+        <div class="stat-value">
+            {{ file_count }}
+        </div>
+
+        <div class="stat-detail">
+            {{ total_archived_bytes | format_bytes }}
+            cataloged
+        </div>
+
+    </div>
+
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Used Tape Space
+        </div>
+
+        <div class="stat-value small">
+            {{ total_used | format_bytes }}
+        </div>
+
+        <div class="stat-detail">
+            Across all cartridges
+        </div>
+
+    </div>
+
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Archive Jobs
+        </div>
+
+        <div class="stat-value">
+            {{ job_count }}
+        </div>
+
+        <div class="stat-detail">
+            Recorded in catalog
+        </div>
+
+    </div>
+
+</div>
+
+
+<div class="grid-two">
+
+    <section class="card">
+
+        <div class="card-header">
+
+            <div>
+                <h2>Tape Drive</h2>
+
+                <p>
+                    Current hardware status
+                </p>
+            </div>
+
+        </div>
+
+
+        <div class="info-grid">
+
+            <div class="info-row">
+                <span>Drive</span>
+                <strong>
+                    {{ drive.description }}
+                </strong>
+            </div>
+
+            <div class="info-row">
+                <span>Serial</span>
+                <strong>
+                    {{ drive.serial }}
+                </strong>
+            </div>
+
+            <div class="info-row">
+                <span>Device</span>
+                <strong>
+                    {{ drive.device }}
+                </strong>
+            </div>
+
+            <div class="info-row">
+                <span>SG Device</span>
+                <strong>
+                    {{ drive.sg_device }}
+                </strong>
+            </div>
+
+            <div class="info-row">
+                <span>Generation</span>
+                <strong>
+                    {{ drive.density }}
+                </strong>
+            </div>
+
+            <div class="info-row">
+                <span>Cartridge</span>
+
+                <strong>
+                    {% if drive.online %}
+                        Online
+                    {% else %}
+                        Not loaded
+                    {% endif %}
+                </strong>
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <section class="card">
+
+        <div class="card-header">
+
+            <div>
+                <h2>Cartridges</h2>
+
+                <p>
+                    Tape catalog
+                </p>
+            </div>
+
+        </div>
+
+
+        {% if tapes %}
+
+        <div class="table-wrap">
+
+            <table>
+
+                <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Generation</th>
+                    <th>Status</th>
+                    <th>Used</th>
+                </tr>
+                </thead>
+
+                <tbody>
+
+                {% for tape in tapes %}
+
+                <tr>
+
+                    <td class="strong">
+                        {{ tape["label"] }}
+                    </td>
+
+                    <td>
+                        {% if tape["generation"] %}
+                            LTO-{{ tape["generation"] }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        {{ tape["status"] }}
+                    </td>
+
+                    <td>
+                        {{ tape["used_bytes"] | format_bytes }}
+                    </td>
+
+                </tr>
+
+                {% endfor %}
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+        {% else %}
+
+        <div class="empty">
+            No tapes in catalog.
+        </div>
+
+        {% endif %}
+
+    </section>
+
+</div>
+
+
+<section class="card">
+
+    <div class="card-header">
+
+        <div>
+            <h2>Recent Archive Jobs</h2>
+
+            <p>
+                Latest archive activity
+            </p>
+        </div>
+
+    </div>
+
+
+    {% if recent_jobs %}
+
+    <div class="table-wrap">
+
+        <table>
+
+            <thead>
+            <tr>
+                <th>ID</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Files</th>
+                <th>Size</th>
+            </tr>
+            </thead>
+
+            <tbody>
+
+            {% for job in recent_jobs %}
+
+            <tr>
+
+                <td class="strong">
+                    #{{ job["id"] }}
+                </td>
+
+                <td class="path">
+                    {{ job["source_path"] }}
+                </td>
+
+                <td>
+                    <span
+                        class="job-status
+                        job-{{ job['status'] }}"
+                    >
+                        {{ job["status"] }}
+                    </span>
+                </td>
+
+                <td>
+                    {{ job["total_files"] or 0 }}
+                </td>
+
+                <td>
+                    {{ job["total_bytes"] | format_bytes }}
+                </td>
+
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+        No archive jobs yet.
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

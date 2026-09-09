@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block title %}
+{{ tape["label"] }} · TapeBox
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>{{ tape["label"] }}</h1>
+        <p>LTFS cartridge details</p>
+    </div>
+
+    <a
+        class="button"
+        href="{{ url_for('tapes_page') }}"
+    >
+        Back to Tapes
+    </a>
+</div>
+
+
+<div class="cards tape-stats">
+
+    <div class="card stat-card">
+        <div class="stat-label">
+            Generation
+        </div>
+
+        <div class="stat-value small">
+            {% if tape["generation"] %}
+                LTO-{{ tape["generation"] }}
+            {% else %}
+                -
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-label">
+            Capacity
+        </div>
+
+        <div class="stat-value small">
+            {{ tape["capacity_bytes"] | format_bytes }}
+        </div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-label">
+            Used
+        </div>
+
+        <div class="stat-value small">
+            {{ tape["used_bytes"] | format_bytes }}
+        </div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-label">
+            Status
+        </div>
+
+        <div class="stat-value small">
+            {{ tape["status"] }}
+        </div>
+    </div>
+
+</div>
+
+
+<section class="card">
+
+    <div class="card-header">
+        <div>
+            <h2>Cartridge Identity</h2>
+            <p>Permanent LTFS information</p>
+        </div>
+    </div>
+
+    <div class="info-grid">
+
+        <div class="info-row">
+            <span>Label</span>
+            <strong>{{ tape["label"] }}</strong>
+        </div>
+
+        <div class="info-row">
+            <span>LTFS UUID</span>
+            <strong class="mono">
+                {{ tape["ltfs_uuid"] or "-" }}
+            </strong>
+        </div>
+
+        <div class="info-row">
+            <span>Barcode</span>
+            <strong>
+                {{ tape["barcode"] or "-" }}
+            </strong>
+        </div>
+
+    </div>
+
+</section>
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+        <div>
+            <h2>Files on Cartridge</h2>
+            <p>Normal files stored directly on this tape</p>
+        </div>
+    </div>
+
+    {% if normal_files %}
+
+    <div class="table-wrap">
+        <table>
+
+            <thead>
+            <tr>
+                <th>File</th>
+                <th>Path</th>
+                <th>Size</th>
+            </tr>
+            </thead>
+
+            <tbody>
+
+            {% for file in normal_files %}
+
+            <tr>
+                <td class="strong">
+                    {{ file["filename"] }}
+                </td>
+
+                <td class="path">
+                    {{ file["relative_path"] }}
+                </td>
+
+                <td>
+                    {{ file["size_bytes"] | format_bytes }}
+                </td>
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+        No normal files stored on this cartridge.
+    </div>
+
+    {% endif %}
+
+</section>
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+        <div>
+            <h2>Spanned File Parts</h2>
+            <p>Pieces of files that span multiple cartridges</p>
+        </div>
+    </div>
+
+    {% if spanned_parts %}
+
+    <div class="table-wrap">
+
+        <table>
+
+            <thead>
+            <tr>
+                <th>File</th>
+                <th>Part</th>
+                <th>Part Size</th>
+                <th>Tape Path</th>
+            </tr>
+            </thead>
+
+            <tbody>
+
+            {% for part in spanned_parts %}
+
+            <tr>
+                <td>
+                    <div class="strong">
+                        {{ part["filename"] }}
+                    </div>
+
+                    <div class="subtext">
+                        {{ part["relative_path"] }}
+                    </div>
+                </td>
+
+                <td>
+                    #{{ part["part_number"] }}
+                </td>
+
+                <td>
+                    {{ part["part_size"] | format_bytes }}
+                </td>
+
+                <td class="path">
+                    {{ part["tape_path"] }}
+                </td>
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+        No spanned file parts on this cartridge.
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

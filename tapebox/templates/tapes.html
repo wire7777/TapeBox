@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}
+Tapes · TapeBox
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Tapes</h1>
+        <p>LTFS cartridge catalog</p>
+    </div>
+</div>
+
+<section class="card">
+
+    {% if tapes %}
+
+    <div class="table-wrap">
+
+        <table>
+            <thead>
+            <tr>
+                <th>Label</th>
+                <th>Generation</th>
+                <th>Status</th>
+                <th>Used</th>
+                <th>Capacity</th>
+                <th>LTFS UUID</th>
+            </tr>
+            </thead>
+
+            <tbody>
+
+            {% for tape in tapes %}
+
+            <tr
+                class="click-row"
+                onclick="window.location='{{ url_for('tape_detail_page', tape_id=tape['id']) }}'"
+            >
+                <td class="strong">
+                    {{ tape["label"] }}
+                </td>
+
+                <td>
+                    {% if tape["generation"] %}
+                        LTO-{{ tape["generation"] }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+
+                <td>
+                    {{ tape["status"] }}
+                </td>
+
+                <td>
+                    {{ tape["used_bytes"] | format_bytes }}
+                </td>
+
+                <td>
+                    {{ tape["capacity_bytes"] | format_bytes }}
+                </td>
+
+                <td class="mono">
+                    {{ tape["ltfs_uuid"] or "-" }}
+                </td>
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+        </table>
+
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+        No cartridges in catalog.
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

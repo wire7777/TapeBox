@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}
+Files · TapeBox
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Files</h1>
+        <p>Search the TapeBox archive catalog</p>
+    </div>
+</div>
+
+
+<section class="card">
+
+    <form
+        method="get"
+        action="{{ url_for('files_page') }}"
+        class="search-form"
+    >
+
+        <input
+            type="text"
+            name="q"
+            value="{{ query }}"
+            placeholder="Search filename or path..."
+            autofocus
+        >
+
+        <button type="submit">
+            Search
+        </button>
+
+        {% if query %}
+
+        <a
+            class="button secondary"
+            href="{{ url_for('files_page') }}"
+        >
+            Clear
+        </a>
+
+        {% endif %}
+
+    </form>
+
+</section>
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+        <div>
+
+            <h2>
+                {% if query %}
+                    Search Results
+                {% else %}
+                    Archive Catalog
+                {% endif %}
+            </h2>
+
+            <p>
+                {{ rows | length }}
+                file{% if rows | length != 1 %}s{% endif %}
+            </p>
+
+        </div>
+    </div>
+
+
+    {% if rows %}
+
+    <div class="table-wrap">
+
+        <table>
+
+            <thead>
+            <tr>
+                <th>File</th>
+                <th>Path</th>
+                <th>Size</th>
+                <th>Storage</th>
+                <th>Required Tape(s)</th>
+            </tr>
+            </thead>
+
+            <tbody>
+
+            {% for item in rows %}
+
+            {% set file = item.file %}
+
+            <tr>
+
+                <td>
+                    <div class="strong">
+                        {{ file["filename"] }}
+                    </div>
+
+                    <div class="subtext">
+                        ID {{ file["id"] }}
+                    </div>
+                </td>
+
+                <td class="path">
+                    {{ file["relative_path"] }}
+                </td>
+
+                <td>
+                    {{ file["size_bytes"] | format_bytes }}
+                </td>
+
+                <td>
+
+                    {% if file["is_spanned"] %}
+
+                    <span class="storage-badge spanned">
+                        SPANNED
+                    </span>
+
+                    {% else %}
+
+                    <span class="storage-badge">
+                        SINGLE TAPE
+                    </span>
+
+                    {% endif %}
+
+                </td>
+
+                <td>
+
+                    {% if item.required_tapes %}
+
+                        {% for tape in item.required_tapes %}
+
+                        <span class="tape-badge">
+                            {{ tape }}
+                        </span>
+
+                        {% endfor %}
+
+                    {% else %}
+
+                        <span class="muted">
+                            Unknown
+                        </span>
+
+                    {% endif %}
+
+                </td>
+
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+
+        {% if query %}
+            No files matched "{{ query }}".
+        {% else %}
+            No files in the archive catalog.
+        {% endif %}
+
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

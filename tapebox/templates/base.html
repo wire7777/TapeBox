@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>
+        {% block title %}TapeBox{% endblock %}
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+</head>
+
+<body>
+
+<div class="layout">
+
+    <aside class="sidebar">
+
+        <div class="brand">
+            <div class="brand-icon">
+                TB
+            </div>
+
+            <div>
+                <div class="brand-name">
+                    TapeBox
+                </div>
+
+                <div class="brand-subtitle">
+                    LTFS Archive
+                </div>
+            </div>
+        </div>
+
+        <nav>
+
+            <a
+                href="/"
+                class="{% if active_page == 'dashboard' %}active{% endif %}"
+            >
+                Dashboard
+            </a>
+
+            <a
+                href="{{ url_for('tapes_page') }}"
+                class="{% if active_page == 'tapes' %}active{% endif %}"
+            >
+                Tapes
+            </a>
+
+            <a
+                href="{{ url_for('files_page') }}"
+                class="{% if active_page == 'files' %}active{% endif %}"
+            >
+                Files
+            </a>
+
+            <a href="#">
+                Archive Jobs
+            </a>
+
+            <a href="#">
+                Restore
+            </a>
+
+            <a href="#">
+                Settings
+            </a>
+
+        </nav>
+
+        <div class="sidebar-footer">
+            TapeBox
+        </div>
+
+    </aside>
+
+
+    <main class="content">
+
+        {% block content %}
+        {% endblock %}
+
+    </main>
+
+</div>
+
+</body>
+</html>
