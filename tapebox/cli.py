@@ -494,6 +494,65 @@ def cmd_tape_import(args):
     print()
 
 
+
+def cmd_catalog_scan_tape(args):
+    """
+    Scan the loaded TapeBox cartridge and recover any missing
+    catalog records from its on-tape metadata.
+    """
+
+    result = import_loaded_tape()
+
+    print()
+    print("TapeBox Catalog Scan")
+    print("-" * 50)
+
+    if not result.get("success"):
+        print("Status            FAILED")
+        print(
+            "Error             "
+            + str(
+                result.get(
+                    "error",
+                    "Unknown catalog recovery error",
+                )
+            )
+        )
+        print()
+        return
+
+    print(
+        f"Tape              {result['label']}"
+    )
+    print(
+        f"LTFS UUID         {result['ltfs_uuid']}"
+    )
+    print(
+        f"Database ID       {result['tape_id']}"
+    )
+    print(
+        f"Manifest Files    {result['files_in_manifest']}"
+    )
+    print(
+        f"Imported          {result['files_imported']}"
+    )
+    print(
+        f"Already Present   {result['files_existing']}"
+    )
+    print(
+        "Tape Record       "
+        + (
+            "CREATED"
+            if result["tape_created"]
+            else "EXISTING"
+        )
+    )
+
+    print()
+    print("Status            COMPLETE")
+    print()
+
+
 def cmd_drive_list(args):
     drives = discover_drives()
 
@@ -1054,6 +1113,38 @@ def build_parser():
 
     tape_import.set_defaults(
         func=cmd_tape_import,
+    )
+
+    #
+    # catalog
+    #
+
+    catalog_parser = (
+        subparsers.add_parser(
+            "catalog",
+            help="Catalog recovery and maintenance",
+        )
+    )
+
+    catalog_sub = (
+        catalog_parser.add_subparsers(
+            dest="catalog_command",
+            required=True,
+        )
+    )
+
+    catalog_scan = (
+        catalog_sub.add_parser(
+            "scan-tape",
+            help=(
+                "Recover catalog records from "
+                "the loaded TapeBox cartridge"
+            ),
+        )
+    )
+
+    catalog_scan.set_defaults(
+        func=cmd_catalog_scan_tape,
     )
 
     #
