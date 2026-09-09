@@ -2,6 +2,8 @@ import argparse
 import re
 import sqlite3
 
+from tapebox.archive import archive_file
+
 from tapebox.tape import (
     discover_drives,
     get_tape_status,
@@ -14,6 +16,7 @@ from tapebox.database import (
     add_tape,
     list_tapes,
     reconcile_loaded_tape,
+    list_files,
 )
 
 
@@ -285,10 +288,6 @@ def cmd_tape_status(args):
 
     print()
 
-    #
-    # LTFS inspection
-    #
-
     ltfs_info = inspect_ltfs(
         sg_device=sg_device,
     )
@@ -342,10 +341,6 @@ def cmd_tape_status(args):
             f"{'LTFS Error':<16}"
             f"{ltfs_info['error']}"
         )
-
-    #
-    # Catalog matching.
-    #
 
     if ltfs_info.get(
         "ltfs"
@@ -594,6 +589,100 @@ def cmd_drive_status(args):
         print()
 
 
+def cmd_archive_add(args):
+    initialize_database()
+
+    result = archive_file(
+        args.path
+    )
+
+    if not result[
+        "success"
+    ]:
+        print()
+        print("Archive FAILED")
+        print("-" * 40)
+        print(
+            result.get(
+                "error",
+                "Unknown error",
+            )
+        )
+        print()
+        return
+
+    print()
+    print("Archive Complete")
+    print("-" * 40)
+
+    print(
+        f"{'File':<16}"
+        f"{result['filename']}"
+    )
+
+    print(
+        f"{'Size':<16}"
+        f"{format_bytes(result['size_bytes'])}"
+    )
+
+    print(
+        f"{'Tape':<16}"
+        f"{result['tape_label']}"
+    )
+
+    print(
+        f"{'Tape Path':<16}"
+        f"{result['tape_path']}"
+    )
+
+    print(
+        f"{'SHA256':<16}"
+        f"{result['sha256']}"
+    )
+
+    print(
+        f"{'Database ID':<16}"
+        f"{result['file_id']}"
+    )
+
+    print()
+
+
+def cmd_file_list(args):
+    initialize_database()
+
+    rows = list_files()
+
+    if not rows:
+        print(
+            "No archived files."
+        )
+        return
+
+    print()
+
+    print(
+        f"{'ID':<6}"
+        f"{'FILE':<32}"
+        f"{'SIZE':<14}"
+        f"{'TAPE':<14}"
+        f"{'TAPE PATH'}"
+    )
+
+    print("-" * 90)
+
+    for row in rows:
+        print(
+            f"{row['id']:<6}"
+            f"{row['filename'][:30]:<32}"
+            f"{format_bytes(row['size_bytes']):<14}"
+            f"{(row['tape_label'] or '-'):<14}"
+            f"{row['tape_path'] or '-'}"
+        )
+
+    print()
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="tapebox",
@@ -731,6 +820,71 @@ def build_parser():
         func=cmd_drive_status,
     )
 
+    #
+    # archive
+    #
+
+    archive_parser = (
+        subparsers.add_parser(
+            "archive",
+            help="Archive files to tape",
+        )
+    )
+
+    archive_sub = (
+        archive_parser.add_subparsers(
+            dest="archive_command",
+            required=True,
+        )
+    )
+
+    archive_add = (
+        archive_sub.add_parser(
+            "add",
+            help=(
+                "Archive one file to the loaded tape"
+            ),
+        )
+    )
+
+    archive_add.add_argument(
+        "path",
+        help="Path to file to archive",
+    )
+
+    archive_add.set_defaults(
+        func=cmd_archive_add,
+    )
+
+    #
+    # file
+    #
+
+    file_parser = (
+        subparsers.add_parser(
+            "file",
+            help="Archived file catalog",
+        )
+    )
+
+    file_sub = (
+        file_parser.add_subparsers(
+            dest="file_command",
+            required=True,
+        )
+    )
+
+    file_list = (
+        file_sub.add_parser(
+            "list",
+            help="List archived files",
+        )
+    )
+
+    file_list.set_defaults(
+        func=cmd_file_list,
+    )
+
     return parser
 
 
@@ -740,3 +894,4 @@ def main():
     args = parser.parse_args()
 
     args.func(args)
+

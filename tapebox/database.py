@@ -56,7 +56,7 @@ def initialize_database():
                 capacity_bytes INTEGER,
                 used_bytes INTEGER DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'available',
-                created_at TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
                 last_seen_at TEXT,
                 notes TEXT
             );
@@ -72,7 +72,7 @@ def initialize_database():
                 total_files INTEGER DEFAULT 0,
                 total_bytes INTEGER DEFAULT 0,
                 bytes_written INTEGER DEFAULT 0,
-                created_at TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT,
                 error TEXT
@@ -89,7 +89,7 @@ def initialize_database():
                 tape_id INTEGER,
                 tape_path TEXT,
                 is_spanned INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
                 restored_at TEXT,
 
                 FOREIGN KEY (archive_job_id)
@@ -123,7 +123,7 @@ def initialize_database():
                 archive_job_id INTEGER,
                 event_type TEXT NOT NULL,
                 message TEXT,
-                created_at TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
 
                 FOREIGN KEY (archive_job_id)
                     REFERENCES archive_jobs(id)
@@ -157,7 +157,7 @@ def add_tape(label):
             """
             INSERT INTO tapes (
                 label,
-                created_at
+                archived_at
             )
             VALUES (?, ?)
             """,
@@ -433,3 +433,76 @@ def reconcile_loaded_tape(
             "matched_by": None,
             "tape": None,
         }
+
+
+def record_archived_file(
+    original_path,
+    relative_path,
+    filename,
+    size_bytes,
+    sha256,
+    tape_id,
+    tape_path,
+):
+    """
+    Record a successfully archived single file.
+    """
+
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO files (
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                checksum_sha256,
+                tape_id,
+                tape_path,
+                is_spanned,
+                archived_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                sha256,
+                tape_id,
+                tape_path,
+                utc_now(),
+            ),
+        )
+
+        return cursor.lastrowid
+
+
+def list_files():
+    """
+    Return archived files with their tape information.
+    """
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                files.id,
+                files.filename,
+                files.original_path,
+                files.relative_path,
+                files.size_bytes,
+                files.checksum_sha256,
+                files.tape_path,
+                files.is_spanned,
+                files.archived_at,
+                tapes.id AS tape_id,
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+            FROM files
+            LEFT JOIN tapes
+                ON tapes.id = files.tape_id
+            ORDER BY files.id
+            """
+        ).fetchall()
