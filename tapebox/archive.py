@@ -24,6 +24,7 @@ from tapebox.database import (
 
 from tapebox.tape import (
     discover_drives,
+    eject_tape,
     get_ltfs_virtual_attribute,
     get_tape_status,
     mount_ltfs,
@@ -2269,11 +2270,38 @@ def archive_folder_job(source_path, job_id=None):
             error="",
         )
 
+    #
+    # Safe auto-eject point:
+    #   tape write
+    #   -> clean LTFS unmount
+    #   -> SQLite commit
+    #   -> manifest refresh
+    #   -> eject
+    #
+    eject_result = None
+
+    if manifest_result.get("success"):
+        eject_result = eject_tape()
+
     return {
         "success": True,
         "completed": all_complete,
         "needs_next_tape": (
             not all_complete
+        ),
+        "auto_ejected": (
+            bool(
+                eject_result
+                and eject_result.get("success")
+            )
+        ),
+        "eject_warning": (
+            None
+            if (
+                eject_result is None
+                or eject_result.get("success")
+            )
+            else eject_result.get("error")
         ),
         "job_id": job_id,
         "manifest_updated": manifest_result.get(

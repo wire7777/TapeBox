@@ -749,3 +749,42 @@ def inspect_ltfs(
         )
 
     return info
+
+def eject_tape(
+    device="/dev/tapebox-drive-nst",
+    timeout=120,
+):
+    """
+    Rewind/unload and physically eject the loaded tape.
+
+    The caller must ensure LTFS is fully unmounted before
+    calling this function.
+    """
+
+    result = run_command(
+        [
+            "mt",
+            "-f",
+            device,
+            "offline",
+        ],
+        timeout=timeout,
+    )
+
+    if result["returncode"] != 0:
+        error_text = (
+            result["stderr"]
+            or result["stdout"]
+            or "Unknown tape eject error"
+        )
+
+        return {
+            "success": False,
+            "device": device,
+            "error": error_text,
+        }
+
+    return {
+        "success": True,
+        "device": device,
+    }

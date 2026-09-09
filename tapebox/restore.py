@@ -9,6 +9,7 @@ from tapebox.database import (
 
 from tapebox.tape import (
     discover_drives,
+    eject_tape,
     get_ltfs_virtual_attribute,
     get_tape_status,
     mount_ltfs,
@@ -803,7 +804,36 @@ def _restore_spanned_file(
                 "partial_preserved": (
                     partial_destination.exists()
                 ),
+                "auto_ejected": False,
             }
+
+        elif (
+            result
+            and (
+                result.get("success")
+                or result.get("wrong_tape")
+            )
+        ):
+            #
+            # LTFS has been cleanly released. It is now safe
+            # to unload the cartridge.
+            #
+            eject_result = eject_tape()
+
+            result["auto_ejected"] = (
+                eject_result.get(
+                    "success",
+                    False,
+                )
+            )
+
+            if not eject_result.get("success"):
+                result["eject_warning"] = (
+                    eject_result.get(
+                        "error",
+                        "Tape eject failed.",
+                    )
+                )
 
     return result
 
