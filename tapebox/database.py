@@ -105,7 +105,7 @@ def initialize_database():
                 tape_id INTEGER NOT NULL,
                 tape_path TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
-                sha256 TEXT,
+                checksum_sha256 TEXT,
 
                 FOREIGN KEY (file_id)
                     REFERENCES files(id)
@@ -779,6 +779,11 @@ def import_tape_manifest_records(
         [],
     )
 
+    spanned_parts = manifest.get(
+        "spanned_parts",
+        [],
+    )
+
     now = utc_now()
 
     with connect() as db:
@@ -1036,6 +1041,219 @@ def import_tape_manifest_records(
 
             imported_count += 1
 
+        #
+        # Recover oversized-file parent rows and physical parts.
+        #
+        # Parent files intentionally have:
+        #   tape_id   = NULL
+        #   tape_path = NULL
+        #
+        # Each physical cartridge location lives only in
+        # file_parts.
+        #
+        spanned_parts_imported = 0
+        spanned_parts_existing = 0
+
+        for entry in spanned_parts:
+            relative_path = str(
+                entry["relative_path"]
+            )
+
+            filename = str(
+                entry["filename"]
+            )
+
+            whole_size = int(
+                entry["file_size_bytes"]
+            )
+
+            whole_sha256 = str(
+                entry["file_sha256"]
+            )
+
+            part_number = int(
+                entry["part_number"]
+            )
+
+            part_size = int(
+                entry["part_size_bytes"]
+            )
+
+            part_sha256 = str(
+                entry["part_sha256"]
+            )
+
+            tape_path = str(
+                entry["tape_path"]
+            )
+
+            archived_at = (
+                entry.get("archived_at")
+                or now
+            )
+
+            #
+            # Find an already-recovered parent by logical archive
+            # identity. archive_job_id is intentionally not used
+            # because it may not exist after total DB loss.
+            #
+            parent = db.execute(
+                """
+                SELECT *
+                FROM files
+                WHERE relative_path = ?
+                  AND filename = ?
+                  AND is_spanned = 1
+                  AND tape_id IS NULL
+                  AND tape_path IS NULL
+                """,
+                (
+                    relative_path,
+                    filename,
+                ),
+            ).fetchone()
+
+            if parent is None:
+                recovered_original_path = (
+                    "recovered://spanned/"
+                    + relative_path
+                )
+
+                cursor = db.execute(
+                    """
+                    INSERT INTO files (
+                        archive_job_id,
+                        original_path,
+                        relative_path,
+                        filename,
+                        size_bytes,
+                        checksum_sha256,
+                        tape_id,
+                        tape_path,
+                        is_spanned,
+                        archived_at,
+                        verified_at
+                    )
+                    VALUES (
+                        NULL,
+                        ?, ?, ?, ?, ?,
+                        NULL, NULL, 1, ?, NULL
+                    )
+                    """,
+                    (
+                        recovered_original_path,
+                        relative_path,
+                        filename,
+                        whole_size,
+                        whole_sha256,
+                        archived_at,
+                    ),
+                )
+
+                parent_id = cursor.lastrowid
+
+            else:
+                parent_id = parent["id"]
+
+                if (
+                    int(parent["size_bytes"])
+                    != whole_size
+                    or parent["checksum_sha256"]
+                    != whole_sha256
+                ):
+                    raise RuntimeError(
+                        "Spanned parent conflict detected for "
+                        f"{relative_path}. "
+                        "No recovery records were imported."
+                    )
+
+            existing_part = db.execute(
+                """
+                SELECT *
+                FROM file_parts
+                WHERE file_id = ?
+                  AND part_number = ?
+                """,
+                (
+                    parent_id,
+                    part_number,
+                ),
+            ).fetchone()
+
+            if existing_part is not None:
+                same_part = (
+                    int(existing_part["tape_id"])
+                    == int(tape_id)
+                    and existing_part["tape_path"]
+                    == tape_path
+                    and int(existing_part["size_bytes"])
+                    == part_size
+                    and existing_part["checksum_sha256"]
+                    == part_sha256
+                )
+
+                if not same_part:
+                    raise RuntimeError(
+                        "Spanned part conflict detected for "
+                        f"{relative_path} part {part_number}. "
+                        "No recovery records were imported."
+                    )
+
+                spanned_parts_existing += 1
+                continue
+
+            #
+            # Also guard against the same physical path being
+            # claimed as a different part.
+            #
+            path_conflict = db.execute(
+                """
+                SELECT
+                    file_parts.*,
+                    files.relative_path
+                FROM file_parts
+                JOIN files
+                    ON files.id = file_parts.file_id
+                WHERE file_parts.tape_id = ?
+                  AND file_parts.tape_path = ?
+                """,
+                (
+                    tape_id,
+                    tape_path,
+                ),
+            ).fetchone()
+
+            if path_conflict is not None:
+                raise RuntimeError(
+                    "Spanned tape-path conflict detected: "
+                    f"{tape_path}. "
+                    "No recovery records were imported."
+                )
+
+            db.execute(
+                """
+                INSERT INTO file_parts (
+                    file_id,
+                    part_number,
+                    tape_id,
+                    tape_path,
+                    size_bytes,
+                    checksum_sha256
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    parent_id,
+                    part_number,
+                    tape_id,
+                    tape_path,
+                    part_size,
+                    part_sha256,
+                ),
+            )
+
+            spanned_parts_imported += 1
+
         return {
             "tape_id": tape_id,
             "tape_created": tape_created,
@@ -1044,6 +1262,15 @@ def import_tape_manifest_records(
             "files_in_manifest": len(files),
             "files_imported": imported_count,
             "files_existing": existing_count,
+            "spanned_parts_in_manifest": len(
+                spanned_parts
+            ),
+            "spanned_parts_imported": (
+                spanned_parts_imported
+            ),
+            "spanned_parts_existing": (
+                spanned_parts_existing
+            ),
         }
 
 
@@ -1327,7 +1554,13 @@ def search_files(query):
 
 def get_archive_restore_plan(job_id):
     """
-    Return the files and cartridges required to restore an archive job.
+    Return the logical files, physical file parts, and cartridges
+    required to restore an archive job.
+
+    Normal files have one physical tape location directly on files.
+
+    Spanned files have no tape_id/tape_path on the parent. Their
+    physical locations are returned through file_parts.
     """
 
     with connect() as db:
@@ -1371,9 +1604,33 @@ def get_archive_restore_plan(job_id):
                 ON tapes.id = files.tape_id
             WHERE files.archive_job_id = ?
             ORDER BY
-                tapes.label COLLATE NOCASE,
                 files.relative_path COLLATE NOCASE,
                 files.id
+            """,
+            (job_id,),
+        ).fetchall()
+
+        part_rows = db.execute(
+            """
+            SELECT
+                file_parts.id AS part_id,
+                file_parts.file_id,
+                file_parts.part_number,
+                file_parts.tape_id,
+                file_parts.tape_path,
+                file_parts.size_bytes,
+                file_parts.checksum_sha256,
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+            FROM file_parts
+            JOIN files
+                ON files.id = file_parts.file_id
+            JOIN tapes
+                ON tapes.id = file_parts.tape_id
+            WHERE files.archive_job_id = ?
+            ORDER BY
+                files.relative_path COLLATE NOCASE,
+                file_parts.part_number
             """,
             (job_id,),
         ).fetchall()
@@ -1383,20 +1640,483 @@ def get_archive_restore_plan(job_id):
         for row in rows
     ]
 
+    parts = [
+        dict(row)
+        for row in part_rows
+    ]
+
+    #
+    # Attach each physical part to its logical parent as well.
+    # This makes the restore plan convenient for CLI, restore
+    # engine, and future web UI callers.
+    #
+    parts_by_file = {}
+
+    for part in parts:
+        parts_by_file.setdefault(
+            part["file_id"],
+            [],
+        ).append(
+            part
+        )
+
+    for file_row in files:
+        file_row["parts"] = (
+            parts_by_file.get(
+                file_row["id"],
+                [],
+            )
+        )
+
+    #
+    # Build the unique cartridge list from:
+    #
+    #   normal files -> files.tape_id
+    #   spanned files -> file_parts.tape_id
+    #
     tapes = []
+    seen_tape_ids = set()
 
-    for row in files:
-        tape = {
-            "tape_id": row["tape_id"],
-            "tape_label": row["tape_label"],
-            "ltfs_uuid": row["ltfs_uuid"],
-        }
+    for file_row in files:
+        if (
+            not file_row["is_spanned"]
+            and file_row["tape_id"] is not None
+            and file_row["tape_id"]
+            not in seen_tape_ids
+        ):
+            tapes.append(
+                {
+                    "tape_id": file_row[
+                        "tape_id"
+                    ],
+                    "tape_label": file_row[
+                        "tape_label"
+                    ],
+                    "ltfs_uuid": file_row[
+                        "ltfs_uuid"
+                    ],
+                }
+            )
 
-        if tape not in tapes:
-            tapes.append(tape)
+            seen_tape_ids.add(
+                file_row["tape_id"]
+            )
+
+    for part in parts:
+        if (
+            part["tape_id"]
+            not in seen_tape_ids
+        ):
+            tapes.append(
+                {
+                    "tape_id": part[
+                        "tape_id"
+                    ],
+                    "tape_label": part[
+                        "tape_label"
+                    ],
+                    "ltfs_uuid": part[
+                        "ltfs_uuid"
+                    ],
+                }
+            )
+
+            seen_tape_ids.add(
+                part["tape_id"]
+            )
 
     return {
         "job": dict(job),
         "files": files,
+        "parts": parts,
         "tapes": tapes,
     }
+
+
+def create_spanned_file(
+    original_path,
+    relative_path,
+    filename,
+    size_bytes,
+    sha256,
+    archive_job_id=None,
+):
+    """
+    Create the parent catalog record for a true multi-tape file.
+
+    The parent file does not belong to one cartridge. Its physical
+    locations are recorded in file_parts.
+    """
+
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO files (
+                archive_job_id,
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                checksum_sha256,
+                tape_id,
+                tape_path,
+                is_spanned,
+                archived_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?)
+            """,
+            (
+                archive_job_id,
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                sha256,
+                utc_now(),
+            ),
+        )
+
+        return cursor.lastrowid
+
+
+def add_file_part(
+    file_id,
+    part_number,
+    tape_id,
+    tape_path,
+    size_bytes,
+    sha256,
+):
+    """
+    Record one physical part of a spanned file.
+    """
+
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO file_parts (
+                file_id,
+                part_number,
+                tape_id,
+                tape_path,
+                size_bytes,
+                checksum_sha256
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                part_number,
+                tape_id,
+                tape_path,
+                size_bytes,
+                sha256,
+            ),
+        )
+
+        return cursor.lastrowid
+
+
+def get_file_parts(file_id):
+    """
+    Return all physical parts of a spanned file in restore order.
+    """
+
+    with connect() as db:
+        rows = db.execute(
+            """
+            SELECT
+                file_parts.id,
+                file_parts.file_id,
+                file_parts.part_number,
+                file_parts.tape_id,
+                file_parts.tape_path,
+                file_parts.size_bytes,
+                file_parts.checksum_sha256,
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+            FROM file_parts
+            LEFT JOIN tapes
+                ON tapes.id = file_parts.tape_id
+            WHERE file_parts.file_id = ?
+            ORDER BY file_parts.part_number
+            """,
+            (file_id,),
+        ).fetchall()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+def get_next_file_part_number(file_id):
+    """
+    Return the next part number for a spanned file.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT MAX(part_number)
+            FROM file_parts
+            WHERE file_id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+
+    highest = row[0]
+
+    if highest is None:
+        return 1
+
+    return int(highest) + 1
+
+
+def get_spanned_file_by_job_path(
+    archive_job_id,
+    relative_path,
+):
+    """
+    Find an existing spanned parent record while resuming a job.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT
+                id,
+                archive_job_id,
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                checksum_sha256,
+                is_spanned,
+                archived_at
+            FROM files
+            WHERE archive_job_id = ?
+              AND relative_path = ?
+              AND is_spanned = 1
+            LIMIT 1
+            """,
+            (
+                archive_job_id,
+                relative_path,
+            ),
+        ).fetchone()
+
+    return row
+
+
+def get_file_parts_by_tape(tape_id):
+    """
+    Return all spanned-file parts physically stored on one tape.
+    """
+
+    with connect() as db:
+        rows = db.execute(
+            """
+            SELECT
+                file_parts.id AS part_id,
+                file_parts.file_id,
+                file_parts.part_number,
+                file_parts.tape_id,
+                file_parts.tape_path,
+                file_parts.size_bytes,
+                file_parts.checksum_sha256,
+
+                files.archive_job_id,
+                files.original_path,
+                files.relative_path,
+                files.filename,
+                files.size_bytes AS file_size_bytes,
+                files.checksum_sha256 AS file_checksum_sha256,
+                files.archived_at,
+                files.verified_at,
+
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+
+            FROM file_parts
+
+            JOIN files
+                ON files.id = file_parts.file_id
+
+            JOIN tapes
+                ON tapes.id = file_parts.tape_id
+
+            WHERE file_parts.tape_id = ?
+
+            ORDER BY
+                files.id,
+                file_parts.part_number
+            """,
+            (tape_id,),
+        ).fetchall()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+def get_spanned_file_written_bytes(file_id):
+    """
+    Return the total number of bytes already safely cataloged
+    across all parts of a spanned file.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT
+                COALESCE(
+                    SUM(size_bytes),
+                    0
+                )
+            FROM file_parts
+            WHERE file_id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+
+    return int(row[0] or 0)
+
+
+def get_spanned_file_part_count(file_id):
+    """
+    Return the number of completed/cataloged parts.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM file_parts
+            WHERE file_id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+
+    return int(row[0] or 0)
+
+
+def record_spanned_file_part(
+    original_path,
+    relative_path,
+    filename,
+    file_size_bytes,
+    file_sha256,
+    archive_job_id,
+    part_number,
+    tape_id,
+    tape_path,
+    part_size_bytes,
+    part_sha256,
+):
+    """
+    Atomically create/find a spanned parent file and record one
+    successfully written physical tape part.
+
+    The parent file does not belong to any single tape:
+        tape_id   = NULL
+        tape_path = NULL
+        is_spanned = 1
+
+    The physical location is recorded only in file_parts.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT
+                id,
+                size_bytes,
+                checksum_sha256
+            FROM files
+            WHERE archive_job_id = ?
+              AND relative_path = ?
+              AND is_spanned = 1
+            LIMIT 1
+            """,
+            (
+                archive_job_id,
+                relative_path,
+            ),
+        ).fetchone()
+
+        if row is None:
+            cursor = db.execute(
+                """
+                INSERT INTO files (
+                    archive_job_id,
+                    original_path,
+                    relative_path,
+                    filename,
+                    size_bytes,
+                    checksum_sha256,
+                    tape_id,
+                    tape_path,
+                    is_spanned,
+                    archived_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?)
+                """,
+                (
+                    archive_job_id,
+                    original_path,
+                    relative_path,
+                    filename,
+                    file_size_bytes,
+                    file_sha256,
+                    utc_now(),
+                ),
+            )
+
+            file_id = cursor.lastrowid
+
+        else:
+            file_id = row["id"]
+
+            if int(row["size_bytes"]) != int(file_size_bytes):
+                raise RuntimeError(
+                    "Spanned source file size changed since the "
+                    "archive job began."
+                )
+
+            existing_sha = row["checksum_sha256"]
+
+            if (
+                existing_sha
+                and file_sha256
+                and existing_sha != file_sha256
+            ):
+                raise RuntimeError(
+                    "Spanned source file checksum changed since the "
+                    "archive job began."
+                )
+
+        db.execute(
+            """
+            INSERT INTO file_parts (
+                file_id,
+                part_number,
+                tape_id,
+                tape_path,
+                size_bytes,
+                checksum_sha256
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                part_number,
+                tape_id,
+                tape_path,
+                part_size_bytes,
+                part_sha256,
+            ),
+        )
+
+        return file_id

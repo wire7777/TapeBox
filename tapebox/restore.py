@@ -2,7 +2,10 @@ import hashlib
 import os
 from pathlib import Path
 
-from tapebox.database import get_file_by_id
+from tapebox.database import (
+    get_file_by_id,
+    get_file_parts,
+)
 
 from tapebox.tape import (
     discover_drives,
@@ -16,6 +19,793 @@ from tapebox.tape import (
 
 RESTORE_MOUNTPOINT = Path("/mnt/tapebox/ltfs")
 READ_BUFFER_SIZE = 16 * 1024 * 1024
+
+
+
+def _validate_spanned_partial(
+    partial_path,
+    parts,
+):
+    """
+    Validate that an existing partial restore consists of an exact,
+    complete prefix of the cataloged tape parts.
+
+    Returns:
+        {
+            "parts_completed": ...,
+            "bytes_completed": ...
+        }
+
+    A partial ending in the middle of a part is rejected.
+    Every completed part is SHA256 checked independently.
+    """
+
+    partial_path = Path(
+        partial_path
+    )
+
+    if not partial_path.exists():
+        return {
+            "parts_completed": 0,
+            "bytes_completed": 0,
+        }
+
+    if not partial_path.is_file():
+        raise RuntimeError(
+            "Spanned restore partial exists but is not "
+            f"a regular file: {partial_path}"
+        )
+
+    actual_size = partial_path.stat().st_size
+
+    if actual_size == 0:
+        return {
+            "parts_completed": 0,
+            "bytes_completed": 0,
+        }
+
+    expected_boundary = 0
+    matching_parts = 0
+
+    for part in parts:
+        expected_boundary += int(
+            part["size_bytes"]
+        )
+
+        if actual_size == expected_boundary:
+            matching_parts = int(
+                part["part_number"]
+            )
+            break
+
+        if actual_size < expected_boundary:
+            raise RuntimeError(
+                "Existing spanned restore partial ends "
+                "in the middle of a tape part. "
+                "TapeBox will not resume it automatically."
+            )
+
+    if matching_parts == 0:
+        raise RuntimeError(
+            "Existing spanned restore partial size does not "
+            "match a valid tape-part boundary."
+        )
+
+    #
+    # Verify each already assembled part independently.
+    #
+    with open(partial_path, "rb") as handle:
+        for part in parts[:matching_parts]:
+            digest = hashlib.sha256()
+            remaining = int(
+                part["size_bytes"]
+            )
+
+            while remaining:
+                chunk = handle.read(
+                    min(
+                        READ_BUFFER_SIZE,
+                        remaining,
+                    )
+                )
+
+                if not chunk:
+                    raise RuntimeError(
+                        "Existing spanned restore partial "
+                        "ended unexpectedly during verification."
+                    )
+
+                digest.update(chunk)
+                remaining -= len(chunk)
+
+            if (
+                digest.hexdigest()
+                != part["checksum_sha256"]
+            ):
+                raise RuntimeError(
+                    "Existing spanned restore partial failed "
+                    "SHA256 verification for part "
+                    f"{part['part_number']}."
+                )
+
+    return {
+        "parts_completed": matching_parts,
+        "bytes_completed": actual_size,
+    }
+
+
+def _restore_spanned_file(
+    row,
+    destination,
+):
+    """
+    Restore one logical file whose physical contents span multiple
+    LTFS cartridges.
+
+    One invocation consumes whichever next required cartridge is
+    currently loaded. The partial assembled output is intentionally
+    preserved between successful tape swaps.
+
+    The final file is only renamed into place after:
+      - every part size is verified
+      - every part SHA256 is verified
+      - the complete file size is verified
+      - the complete file SHA256 is verified
+    """
+
+    parts = get_file_parts(
+        row["id"]
+    )
+
+    if not parts:
+        return {
+            "success": False,
+            "error": (
+                "Spanned file has no cataloged tape parts."
+            ),
+        }
+
+    #
+    # Parts must form an exact sequence beginning at 1.
+    #
+    expected_number = 1
+    total_part_bytes = 0
+
+    for part in parts:
+        if (
+            int(part["part_number"])
+            != expected_number
+        ):
+            return {
+                "success": False,
+                "error": (
+                    "Spanned file has a missing or "
+                    "out-of-order tape part. "
+                    f"Expected part {expected_number}, "
+                    f"found {part['part_number']}."
+                ),
+            }
+
+        if not part["ltfs_uuid"]:
+            return {
+                "success": False,
+                "error": (
+                    "Spanned tape part has no LTFS UUID: "
+                    f"part {part['part_number']}."
+                ),
+            }
+
+        if not part["tape_path"]:
+            return {
+                "success": False,
+                "error": (
+                    "Spanned tape part has no tape path: "
+                    f"part {part['part_number']}."
+                ),
+            }
+
+        if not part["checksum_sha256"]:
+            return {
+                "success": False,
+                "error": (
+                    "Spanned tape part has no SHA256: "
+                    f"part {part['part_number']}."
+                ),
+            }
+
+        total_part_bytes += int(
+            part["size_bytes"]
+        )
+
+        expected_number += 1
+
+    if total_part_bytes != int(
+        row["size_bytes"]
+    ):
+        return {
+            "success": False,
+            "error": (
+                "Spanned file is incomplete in the catalog. "
+                f"Expected {row['size_bytes']} bytes, "
+                f"but parts total {total_part_bytes} bytes."
+            ),
+        }
+
+    if not row["checksum_sha256"]:
+        return {
+            "success": False,
+            "error": (
+                "Spanned file has no complete-file SHA256."
+            ),
+        }
+
+    destination = Path(
+        destination
+    )
+
+    if (
+        destination.exists()
+        and destination.is_dir()
+    ):
+        final_destination = (
+            destination
+            / row["filename"]
+        )
+    else:
+        final_destination = destination
+
+    parent = final_destination.parent
+
+    if not parent.exists():
+        return {
+            "success": False,
+            "error": (
+                "Destination directory does not exist: "
+                f"{parent}"
+            ),
+        }
+
+    if not parent.is_dir():
+        return {
+            "success": False,
+            "error": (
+                "Destination parent is not a directory: "
+                f"{parent}"
+            ),
+        }
+
+    #
+    # A completed destination is accepted only when it matches the
+    # complete logical file.
+    #
+    if final_destination.exists():
+        if not final_destination.is_file():
+            return {
+                "success": False,
+                "error": (
+                    "Destination exists but is not a regular "
+                    f"file: {final_destination}"
+                ),
+            }
+
+        checksum, size = _sha256_file(
+            final_destination
+        )
+
+        if (
+            size == row["size_bytes"]
+            and checksum
+            == row["checksum_sha256"]
+        ):
+            return {
+                "success": True,
+                "completed": True,
+                "file_id": row["id"],
+                "filename": row["filename"],
+                "destination": str(
+                    final_destination
+                ),
+                "size_bytes": size,
+                "sha256": checksum,
+                "already_restored": True,
+            }
+
+        return {
+            "success": False,
+            "error": (
+                "Destination already exists but does not "
+                "match the TapeBox catalog. It will not "
+                f"be overwritten: {final_destination}"
+            ),
+        }
+
+    partial_destination = (
+        parent
+        / (
+            ".tapebox-partial-"
+            + final_destination.name
+        )
+    )
+
+    try:
+        partial_state = (
+            _validate_spanned_partial(
+                partial_destination,
+                parts,
+            )
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+    completed_parts = int(
+        partial_state[
+            "parts_completed"
+        ]
+    )
+
+    if completed_parts >= len(parts):
+        #
+        # This should only happen after a crash between completing
+        # the final part and the final full-file verification.
+        #
+        checksum, size = _sha256_file(
+            partial_destination
+        )
+
+        if (
+            size != row["size_bytes"]
+            or checksum
+            != row["checksum_sha256"]
+        ):
+            return {
+                "success": False,
+                "error": (
+                    "Complete spanned partial failed final "
+                    "size or SHA256 verification."
+                ),
+            }
+
+        os.replace(
+            partial_destination,
+            final_destination,
+        )
+
+        directory_fd = os.open(
+            parent,
+            os.O_RDONLY,
+        )
+
+        try:
+            os.fsync(
+                directory_fd
+            )
+        finally:
+            os.close(
+                directory_fd
+            )
+
+        return {
+            "success": True,
+            "completed": True,
+            "file_id": row["id"],
+            "filename": row["filename"],
+            "destination": str(
+                final_destination
+            ),
+            "size_bytes": size,
+            "sha256": checksum,
+            "verified": True,
+        }
+
+    next_part = parts[
+        completed_parts
+    ]
+
+    drives = discover_drives()
+
+    if not drives:
+        return {
+            "success": False,
+            "error": "No tape drive detected.",
+        }
+
+    if len(drives) > 1:
+        return {
+            "success": False,
+            "error": (
+                "More than one tape drive detected. "
+                "Drive selection is not implemented yet."
+            ),
+        }
+
+    drive = drives[0]
+
+    nst_device = drive.get(
+        "nst_device"
+    )
+
+    sg_device = drive.get(
+        "sg_device"
+    )
+
+    if not nst_device or not sg_device:
+        return {
+            "success": False,
+            "error": (
+                "Tape drive device mapping is incomplete."
+            ),
+        }
+
+    status = get_tape_status(
+        nst_device
+    )
+
+    if not status.get("available"):
+        return {
+            "success": False,
+            "error": (
+                status.get("error")
+                or "Tape cartridge is not available."
+            ),
+        }
+
+    if not status.get("online"):
+        return {
+            "success": False,
+            "error": (
+                "Tape cartridge is not online."
+            ),
+        }
+
+    RESTORE_MOUNTPOINT.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if _is_mounted(
+        RESTORE_MOUNTPOINT
+    ):
+        return {
+            "success": False,
+            "error": (
+                "TapeBox LTFS mount point is already mounted: "
+                f"{RESTORE_MOUNTPOINT}"
+            ),
+        }
+
+    mount_result = mount_ltfs(
+        sg_device,
+        RESTORE_MOUNTPOINT,
+        read_only=True,
+        retries=5,
+        retry_delay=1.5,
+        timeout=120,
+    )
+
+    if not _is_mounted(
+        RESTORE_MOUNTPOINT
+    ):
+        return {
+            "success": False,
+            "error": (
+                mount_result.get("stderr")
+                or mount_result.get("stdout")
+                or "LTFS read-only mount failed."
+            ),
+        }
+
+    result = None
+
+    try:
+        loaded_uuid = (
+            get_ltfs_virtual_attribute(
+                RESTORE_MOUNTPOINT,
+                "ltfs.volumeUUID",
+            )
+        )
+
+        loaded_name = (
+            get_ltfs_virtual_attribute(
+                RESTORE_MOUNTPOINT,
+                "ltfs.volumeName",
+            )
+        )
+
+        if not loaded_uuid:
+            raise RuntimeError(
+                "Could not read LTFS volume UUID."
+            )
+
+        if (
+            loaded_uuid
+            != next_part["ltfs_uuid"]
+        ):
+            result = {
+                "success": False,
+                "wrong_tape": True,
+                "required_tape": (
+                    next_part["tape_label"]
+                ),
+                "required_uuid": (
+                    next_part["ltfs_uuid"]
+                ),
+                "loaded_tape": (
+                    loaded_name or "-"
+                ),
+                "loaded_uuid": loaded_uuid,
+                "part_number": (
+                    next_part[
+                        "part_number"
+                    ]
+                ),
+                "error": (
+                    "Wrong tape loaded. Need "
+                    f"{next_part['tape_label']} "
+                    f"for part "
+                    f"{next_part['part_number']}."
+                ),
+            }
+
+        else:
+            #
+            # Consume consecutive parts that happen to be on the
+            # currently loaded cartridge.
+            #
+            parts_this_tape = []
+
+            for part in parts[
+                completed_parts:
+            ]:
+                if (
+                    part["ltfs_uuid"]
+                    != loaded_uuid
+                ):
+                    break
+
+                parts_this_tape.append(
+                    part
+                )
+
+            mode = (
+                "ab"
+                if partial_destination.exists()
+                else "xb"
+            )
+
+            with open(
+                partial_destination,
+                mode,
+            ) as dst:
+
+                for part in parts_this_tape:
+                    source = (
+                        RESTORE_MOUNTPOINT
+                        / part[
+                            "tape_path"
+                        ].lstrip("/")
+                    )
+
+                    if not source.exists():
+                        raise FileNotFoundError(
+                            "Tape part is missing: "
+                            f"{part['tape_path']}"
+                        )
+
+                    if not source.is_file():
+                        raise RuntimeError(
+                            "Tape part path is not a "
+                            "regular file: "
+                            f"{part['tape_path']}"
+                        )
+
+                    digest = hashlib.sha256()
+                    copied = 0
+
+                    with open(
+                        source,
+                        "rb",
+                    ) as src:
+                        while True:
+                            chunk = src.read(
+                                READ_BUFFER_SIZE
+                            )
+
+                            if not chunk:
+                                break
+
+                            dst.write(
+                                chunk
+                            )
+
+                            digest.update(
+                                chunk
+                            )
+
+                            copied += len(
+                                chunk
+                            )
+
+                    if (
+                        copied
+                        != part["size_bytes"]
+                    ):
+                        raise RuntimeError(
+                            "Restored tape-part size "
+                            "mismatch for part "
+                            f"{part['part_number']}."
+                        )
+
+                    if (
+                        digest.hexdigest()
+                        != part[
+                            "checksum_sha256"
+                        ]
+                    ):
+                        raise RuntimeError(
+                            "Restored tape-part SHA256 "
+                            "mismatch for part "
+                            f"{part['part_number']}."
+                        )
+
+                    #
+                    # Commit every completed part to disk before
+                    # moving to the next part.
+                    #
+                    dst.flush()
+
+                    os.fsync(
+                        dst.fileno()
+                    )
+
+            completed_parts += len(
+                parts_this_tape
+            )
+
+            #
+            # All physical parts are assembled. Verify the entire
+            # logical file before exposing the final filename.
+            #
+            if completed_parts == len(parts):
+                checksum, size = _sha256_file(
+                    partial_destination
+                )
+
+                if (
+                    size != row["size_bytes"]
+                ):
+                    raise RuntimeError(
+                        "Restored complete spanned file "
+                        "size mismatch. "
+                        f"Expected {row['size_bytes']} "
+                        f"bytes, received {size}."
+                    )
+
+                if (
+                    checksum
+                    != row[
+                        "checksum_sha256"
+                    ]
+                ):
+                    raise RuntimeError(
+                        "Restored complete spanned file "
+                        "SHA256 mismatch."
+                    )
+
+                os.replace(
+                    partial_destination,
+                    final_destination,
+                )
+
+                directory_fd = os.open(
+                    parent,
+                    os.O_RDONLY,
+                )
+
+                try:
+                    os.fsync(
+                        directory_fd
+                    )
+                finally:
+                    os.close(
+                        directory_fd
+                    )
+
+                result = {
+                    "success": True,
+                    "completed": True,
+                    "file_id": row["id"],
+                    "filename": row[
+                        "filename"
+                    ],
+                    "destination": str(
+                        final_destination
+                    ),
+                    "parts_total": len(parts),
+                    "parts_completed": len(
+                        parts
+                    ),
+                    "size_bytes": size,
+                    "sha256": checksum,
+                    "verified": True,
+                }
+
+            else:
+                required = parts[
+                    completed_parts
+                ]
+
+                result = {
+                    "success": True,
+                    "completed": False,
+                    "needs_next_tape": True,
+                    "file_id": row["id"],
+                    "filename": row[
+                        "filename"
+                    ],
+                    "destination": str(
+                        final_destination
+                    ),
+                    "partial_destination": str(
+                        partial_destination
+                    ),
+                    "parts_total": len(parts),
+                    "parts_completed": (
+                        completed_parts
+                    ),
+                    "bytes_completed": (
+                        partial_destination.stat().st_size
+                    ),
+                    "next_part": required[
+                        "part_number"
+                    ],
+                    "required_tape": required[
+                        "tape_label"
+                    ],
+                    "required_uuid": required[
+                        "ltfs_uuid"
+                    ],
+                }
+
+    except Exception as exc:
+        #
+        # Do NOT automatically delete a spanned partial.
+        #
+        # Successfully verified complete prefix parts are valuable
+        # resume state. On the next invocation the complete-prefix
+        # verifier decides whether the partial is safe to continue.
+        #
+        result = {
+            "success": False,
+            "error": str(exc),
+            "partial_preserved": (
+                partial_destination.exists()
+            ),
+        }
+
+    finally:
+        unmounted, unmount_error = (
+            _unmount_ltfs(
+                RESTORE_MOUNTPOINT
+            )
+        )
+
+        if not unmounted:
+            result = {
+                "success": False,
+                "error": (
+                    "Spanned restore operation finished, "
+                    "but LTFS could not be released cleanly: "
+                    f"{unmount_error}"
+                ),
+                "partial_preserved": (
+                    partial_destination.exists()
+                ),
+            }
+
+    return result
 
 
 def restore_file(file_id, destination):
@@ -40,12 +830,10 @@ def restore_file(file_id, destination):
         }
 
     if row["is_spanned"]:
-        return {
-            "success": False,
-            "error": (
-                "Spanned-file restore is not implemented yet."
-            ),
-        }
+        return _restore_spanned_file(
+            row,
+            destination,
+        )
 
     expected_uuid = row["ltfs_uuid"]
     expected_checksum = row["checksum_sha256"]
