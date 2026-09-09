@@ -2,7 +2,10 @@ import argparse
 import re
 import sqlite3
 
-from tapebox.archive import archive_path
+from tapebox.archive import (
+    archive_path,
+    resume_archive_job,
+)
 from tapebox.verify import verify_file
 
 from tapebox.tape import (
@@ -18,6 +21,7 @@ from tapebox.database import (
     list_tapes,
     reconcile_loaded_tape,
     list_files,
+    list_archive_jobs,
 )
 
 
@@ -590,6 +594,119 @@ def cmd_drive_status(args):
         print()
 
 
+def _print_archive_result(result):
+    print()
+
+    if not result.get("success"):
+        print("Archive FAILED")
+        print("-" * 50)
+
+        if result.get("job_id"):
+            print(
+                f"{'Job ID':<18}"
+                f"{result['job_id']}"
+            )
+
+        print(
+            f"{'Error':<18}"
+            f"{result.get('error', 'Unknown error')}"
+        )
+
+        print()
+        return
+
+    print("TapeBox Archive")
+    print("-" * 50)
+
+    if result.get("job_id"):
+        print(
+            f"{'Job ID':<18}"
+            f"{result['job_id']}"
+        )
+
+    if result.get("folder"):
+        print(
+            f"{'Folder':<18}"
+            f"{result['folder']}"
+        )
+
+        print(
+            f"{'Files':<18}"
+            f"{result.get('files_completed', 0)}"
+            f"/{result.get('file_count', 0)}"
+        )
+
+        if result.get("tape_label"):
+            print(
+                f"{'This Tape':<18}"
+                f"{result['tape_label']}"
+            )
+
+        print(
+            f"{'Total Written':<18}"
+            f"{format_bytes(result.get('bytes_written', 0))}"
+        )
+
+        if result.get("completed"):
+            print()
+            print("Status            COMPLETE")
+        elif result.get("needs_next_tape"):
+            print()
+            print("Status            NEED NEXT TAPE")
+
+            if result.get("next_file"):
+                print(
+                    f"{'Next File':<18}"
+                    f"{result['next_file']}"
+                )
+
+            print()
+            print(
+                "Load another registered tape, then run:"
+            )
+            print(
+                f"  python3 -m tapebox archive resume "
+                f"{result['job_id']}"
+            )
+
+        print()
+        return
+
+    print(
+        f"{'File':<18}"
+        f"{result['filename']}"
+    )
+
+    print(
+        f"{'Size':<18}"
+        f"{format_bytes(result['size_bytes'])}"
+    )
+
+    print(
+        f"{'Tape':<18}"
+        f"{result['tape_label']}"
+    )
+
+    print(
+        f"{'Tape Path':<18}"
+        f"{result['tape_path']}"
+    )
+
+    print(
+        f"{'SHA256':<18}"
+        f"{result['sha256']}"
+    )
+
+    print(
+        f"{'Database ID':<18}"
+        f"{result['file_id']}"
+    )
+
+    print()
+    print("Status            COMPLETE")
+    print()
+
+
 def cmd_archive_add(args):
     initialize_database()
 
@@ -597,70 +714,51 @@ def cmd_archive_add(args):
         args.path
     )
 
-    if not result[
-        "success"
-    ]:
-        print()
-        print("Archive FAILED")
-        print("-" * 40)
-        print(
-            result.get(
-                "error",
-                "Unknown error",
-            )
-        )
-        print()
+    _print_archive_result(
+        result
+    )
+
+
+def cmd_archive_resume(args):
+    initialize_database()
+
+    result = resume_archive_job(
+        args.job_id
+    )
+
+    _print_archive_result(
+        result
+    )
+
+
+def cmd_archive_jobs(args):
+    initialize_database()
+
+    rows = list_archive_jobs()
+
+    if not rows:
+        print("No archive jobs.")
         return
 
     print()
-    print("Archive Complete")
-    print("-" * 40)
-
-    if result.get("folder"):
-        print(
-            f"{'Folder':<16}"
-            f"{result['folder']}"
-        )
-
-        print(
-            f"{'Files':<16}"
-            f"{result['file_count']}"
-        )
-    else:
-        print(
-            f"{'File':<16}"
-            f"{result['filename']}"
-        )
 
     print(
-        f"{'Size':<16}"
-        f"{format_bytes(result['size_bytes'])}"
+        f"{'ID':<6}"
+        f"{'STATUS':<20}"
+        f"{'FILES/BYTES':<22}"
+        f"{'SOURCE'}"
     )
 
-    print(
-        f"{'Tape':<16}"
-        f"{result['tape_label']}"
-    )
+    print("-" * 100)
 
-    print(
-        f"{'Tape Path':<16}"
-        f"{result['tape_path']}"
-    )
-
-    if result.get("folder"):
+    for row in rows:
         print(
-            f"{'Catalog Files':<16}"
-            f"{len(result.get('database_ids', []))}"
-        )
-    else:
-        print(
-            f"{'SHA256':<16}"
-            f"{result['sha256']}"
-        )
-
-        print(
-            f"{'Database ID':<16}"
-            f"{result['file_id']}"
+            f"{row['id']:<6}"
+            f"{row['status']:<20}"
+            f"{format_bytes(row['bytes_written'])}"
+            f" / "
+            f"{format_bytes(row['total_bytes']):<14}"
+            f"{row['source_path']}"
         )
 
     print()
@@ -950,6 +1048,34 @@ def build_parser():
 
     archive_add.set_defaults(
         func=cmd_archive_add,
+    )
+
+    archive_resume = (
+        archive_sub.add_parser(
+            "resume",
+            help="Resume a folder archive job",
+        )
+    )
+
+    archive_resume.add_argument(
+        "job_id",
+        type=int,
+        help="Archive job database ID",
+    )
+
+    archive_resume.set_defaults(
+        func=cmd_archive_resume,
+    )
+
+    archive_jobs = (
+        archive_sub.add_parser(
+            "jobs",
+            help="List archive jobs",
+        )
+    )
+
+    archive_jobs.set_defaults(
+        func=cmd_archive_jobs,
     )
 
     #
