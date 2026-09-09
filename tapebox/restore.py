@@ -1896,6 +1896,150 @@ def restore_archive_job(
     # Once all spanned logical files are complete, this function
     # falls through to the existing bulk normal-file restore path.
     #
+    #
+    # Crash-recovery finalization for spanned files.
+    #
+    # A restore may have successfully written and fsynced the final
+    # physical tape part, then stopped before the complete logical
+    # file was SHA256-verified and atomically renamed into place.
+    #
+    # If every cataloged part is already present in the local partial,
+    # finish that work locally without requiring a tape drive.
+    #
+    locally_finalized_ids = set()
+
+    for row in list(remaining):
+        if not row["is_spanned"]:
+            continue
+
+        output = (
+            destination
+            / row["relative_path"]
+        )
+
+        partial = (
+            output.parent
+            / (
+                ".tapebox-partial-"
+                + output.name
+            )
+        )
+
+        if not partial.exists():
+            continue
+
+        parts = get_file_parts(
+            row["id"]
+        )
+
+        if not parts:
+            return {
+                "success": False,
+                "error": (
+                    "Spanned file has no physical parts "
+                    f"in the catalog: file ID {row['id']}"
+                ),
+            }
+
+        try:
+            partial_state = (
+                _validate_spanned_partial(
+                    partial,
+                    parts,
+                )
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+            }
+
+        completed_parts = int(
+            partial_state.get(
+                "parts_completed",
+                0,
+            )
+        )
+
+        if completed_parts < len(parts):
+            continue
+
+        output.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        finalize_result = (
+            _restore_spanned_from_mounted_tape(
+                row,
+                output,
+                "",
+                None,
+            )
+        )
+
+        if not finalize_result.get(
+            "success"
+        ):
+            return {
+                "success": False,
+                "job_id": job_id,
+                "source_path": job["source_path"],
+                "destination": str(destination),
+                "error": finalize_result.get(
+                    "error",
+                    (
+                        "Could not finalize completed "
+                        "spanned restore partial."
+                    ),
+                ),
+            }
+
+        if finalize_result.get(
+            "completed",
+            False,
+        ):
+            locally_finalized_ids.add(
+                row["id"]
+            )
+
+    if locally_finalized_ids:
+        completed_ids |= (
+            locally_finalized_ids
+        )
+
+        remaining = [
+            row
+            for row in remaining
+            if row["id"]
+            not in locally_finalized_ids
+        ]
+
+    #
+    # If local crash recovery finished the final outstanding files,
+    # there is no reason to discover, wait for, mount, or eject tape.
+    #
+    if not remaining:
+        return {
+            "success": True,
+            "completed": True,
+            "job_id": job_id,
+            "source_path": job["source_path"],
+            "destination": str(destination),
+            "files_total": len(files),
+            "files_completed": len(files),
+            "files_restored_this_run": len(
+                locally_finalized_ids
+            ),
+            "files_skipped": (
+                len(completed_ids)
+                - len(locally_finalized_ids)
+            ),
+            "bytes_restored_this_run": 0,
+            "required_tapes": [],
+            "auto_ejected": False,
+        }
+
     drives = discover_drives()
 
     if not drives:
