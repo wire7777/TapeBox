@@ -307,7 +307,7 @@ def discover_drives():
 
 def get_tape_status(
     device="/dev/nst0",
-    retries=5,
+    retries=10,
     retry_delay=1.0,
 ):
     """
@@ -315,6 +315,14 @@ def get_tape_status(
 
     Short-lived EBUSY/I/O errors are retried because some drives
     briefly remain unavailable after LTFS mount/unmount activity.
+
+    A newly inserted cartridge may also return a successful mt
+    status before the drive has finished loading it. In that case
+    TapeBox waits for ONLINE instead of immediately reporting the
+    cartridge as unavailable.
+
+    If DR_OPEN is reported, no cartridge is loaded, so there is no
+    reason to wait through the retry interval.
     """
     if not Path(device).exists():
         return {
@@ -337,35 +345,77 @@ def get_tape_status(
         )
 
         if result["returncode"] == 0:
+            text = result.get(
+                "stdout",
+                "",
+            )
+
+            #
+            # Cartridge is fully loaded and ready.
+            #
+            if "ONLINE" in text:
+                break
+
+            #
+            # DR_OPEN means the drive is empty/unloaded.
+            # Do not make commands wait several seconds when
+            # there is genuinely no cartridge inserted.
+            #
+            if "DR_OPEN" in text:
+                break
+
+            #
+            # mt succeeded, but the cartridge has not yet
+            # transitioned ONLINE. This commonly occurs for a
+            # few seconds immediately after insertion.
+            #
+            if attempt < retries:
+                time.sleep(
+                    retry_delay
+                )
+                continue
+
             break
 
-        text = (
+        error_text = (
             result.get("stdout", "")
             + "\n"
             + result.get("stderr", "")
         )
 
-        if not _is_transient_tape_error(text):
+        if not _is_transient_tape_error(
+            error_text
+        ):
             break
 
         if attempt < retries:
-            time.sleep(retry_delay)
+            time.sleep(
+                retry_delay
+            )
 
     status = {
         "device": device,
-        "available": result["returncode"] == 0,
-        "raw": result["stdout"],
+        "available": (
+            result["returncode"] == 0
+        ),
+        "raw": result.get(
+            "stdout",
+            "",
+        ),
     }
 
     if result["returncode"] != 0:
         status["error"] = (
-            result["stderr"]
-            or result["stdout"]
+            result.get("stderr")
+            or result.get("stdout")
             or "Unknown error"
         )
         return status
 
-    text = result["stdout"]
+    text = result.get(
+        "stdout",
+        "",
+    )
 
     density = re.search(
         r"Density code .*?\((.*?)\)",
@@ -373,12 +423,22 @@ def get_tape_status(
     )
 
     if density:
-        status["density"] = density.group(1)
+        status["density"] = (
+            density.group(1)
+        )
 
-    status["online"] = "ONLINE" in text
-    status["write_protected"] = "WR_PROT" in text
-    status["beginning_of_tape"] = "BOT" in text
-    status["end_of_tape"] = "EOT" in text
+    status["online"] = (
+        "ONLINE" in text
+    )
+    status["write_protected"] = (
+        "WR_PROT" in text
+    )
+    status["beginning_of_tape"] = (
+        "BOT" in text
+    )
+    status["end_of_tape"] = (
+        "EOT" in text
+    )
 
     return status
 
