@@ -56,7 +56,7 @@ def initialize_database():
                 capacity_bytes INTEGER,
                 used_bytes INTEGER DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'available',
-                archived_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
                 last_seen_at TEXT,
                 notes TEXT
             );
@@ -72,7 +72,7 @@ def initialize_database():
                 total_files INTEGER DEFAULT 0,
                 total_bytes INTEGER DEFAULT 0,
                 bytes_written INTEGER DEFAULT 0,
-                archived_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT,
                 error TEXT
@@ -123,7 +123,7 @@ def initialize_database():
                 archive_job_id INTEGER,
                 event_type TEXT NOT NULL,
                 message TEXT,
-                archived_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
 
                 FOREIGN KEY (archive_job_id)
                     REFERENCES archive_jobs(id)
@@ -157,7 +157,7 @@ def add_tape(label):
             """
             INSERT INTO tapes (
                 label,
-                archived_at
+                created_at
             )
             VALUES (?, ?)
             """,
