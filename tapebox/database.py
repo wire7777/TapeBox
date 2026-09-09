@@ -746,3 +746,303 @@ def list_archive_jobs():
             ORDER BY id DESC
             """
         ).fetchall()
+
+
+def import_tape_manifest_records(
+    tape_metadata,
+    manifest,
+    generation=None,
+):
+    """
+    Recover a TapeBox cartridge and its file records from the
+    on-tape metadata.
+
+    Safety rules:
+      - LTFS UUID is the permanent cartridge identity.
+      - Never replace an existing tape UUID.
+      - Never overwrite an existing file record.
+      - Exact existing file records are skipped.
+      - Any conflicting file aborts the whole import.
+      - archive_job_id is deliberately not restored here because the
+        original archive_jobs table may no longer exist after DB loss.
+    """
+
+    label = str(
+        tape_metadata["label"]
+    ).strip().upper()
+
+    ltfs_uuid = str(
+        tape_metadata["ltfs_uuid"]
+    ).strip()
+
+    files = manifest.get(
+        "files",
+        [],
+    )
+
+    now = utc_now()
+
+    with connect() as db:
+
+        #
+        # Find cartridge by permanent UUID first.
+        #
+        tape = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE ltfs_uuid = ?
+            """,
+            (ltfs_uuid,),
+        ).fetchone()
+
+        if tape is None:
+            tape_by_label = db.execute(
+                """
+                SELECT *
+                FROM tapes
+                WHERE label = ?
+                """,
+                (label,),
+            ).fetchone()
+
+            #
+            # Same friendly label already belongs to another cartridge.
+            #
+            if (
+                tape_by_label is not None
+                and tape_by_label["ltfs_uuid"]
+                and tape_by_label["ltfs_uuid"] != ltfs_uuid
+            ):
+                raise RuntimeError(
+                    f"Tape label conflict: {label} is already "
+                    f"assigned to LTFS UUID "
+                    f"{tape_by_label['ltfs_uuid']}."
+                )
+
+            if tape_by_label is not None:
+                db.execute(
+                    """
+                    UPDATE tapes
+                    SET
+                        ltfs_uuid = ?,
+                        generation = COALESCE(generation, ?),
+                        last_seen_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        ltfs_uuid,
+                        generation,
+                        now,
+                        tape_by_label["id"],
+                    ),
+                )
+
+                tape_id = tape_by_label["id"]
+                tape_created = False
+
+            else:
+                cursor = db.execute(
+                    """
+                    INSERT INTO tapes (
+                        label,
+                        ltfs_uuid,
+                        generation,
+                        status,
+                        created_at,
+                        last_seen_at
+                    )
+                    VALUES (?, ?, ?, 'available', ?, ?)
+                    """,
+                    (
+                        label,
+                        ltfs_uuid,
+                        generation,
+                        now,
+                        now,
+                    ),
+                )
+
+                tape_id = cursor.lastrowid
+                tape_created = True
+
+        else:
+            tape_id = tape["id"]
+            tape_created = False
+
+            db.execute(
+                """
+                UPDATE tapes
+                SET
+                    generation = COALESCE(generation, ?),
+                    last_seen_at = ?
+                WHERE id = ?
+                """,
+                (
+                    generation,
+                    now,
+                    tape_id,
+                ),
+            )
+
+        #
+        # First pass:
+        # detect every conflict before inserting anything.
+        #
+        conflicts = []
+        existing_count = 0
+        missing = []
+
+        for entry in files:
+            tape_path = str(
+                entry["tape_path"]
+            )
+
+            size_bytes = int(
+                entry["size_bytes"]
+            )
+
+            sha256 = entry.get(
+                "sha256"
+            )
+
+            existing = db.execute(
+                """
+                SELECT *
+                FROM files
+                WHERE tape_id = ?
+                  AND tape_path = ?
+                """,
+                (
+                    tape_id,
+                    tape_path,
+                ),
+            ).fetchone()
+
+            if existing is None:
+                missing.append(
+                    entry
+                )
+                continue
+
+            same_size = (
+                int(existing["size_bytes"])
+                == size_bytes
+            )
+
+            same_hash = (
+                existing["checksum_sha256"]
+                == sha256
+            )
+
+            if same_size and same_hash:
+                existing_count += 1
+                continue
+
+            conflicts.append(
+                {
+                    "tape_path": tape_path,
+                    "catalog_size": existing["size_bytes"],
+                    "manifest_size": size_bytes,
+                    "catalog_sha256": existing["checksum_sha256"],
+                    "manifest_sha256": sha256,
+                }
+            )
+
+        if conflicts:
+            paths = ", ".join(
+                item["tape_path"]
+                for item in conflicts
+            )
+
+            raise RuntimeError(
+                "Catalog conflict detected. No recovery records "
+                f"were imported. Conflicting path(s): {paths}"
+            )
+
+        #
+        # Second pass:
+        # insert only records that are genuinely missing.
+        #
+        imported_count = 0
+
+        for entry in missing:
+            relative_path = str(
+                entry.get("relative_path")
+                or entry["tape_path"].lstrip("/")
+            )
+
+            filename = str(
+                entry.get("filename")
+                or relative_path.rsplit("/", 1)[-1]
+            )
+
+            tape_path = str(
+                entry["tape_path"]
+            )
+
+            archived_at = (
+                entry.get("archived_at")
+                or now
+            )
+
+            verified_at = entry.get(
+                "verified_at"
+            )
+
+            is_spanned = (
+                1
+                if entry.get("is_spanned")
+                else 0
+            )
+
+            recovered_original_path = (
+                f"recovered://{label}/"
+                f"{relative_path}"
+            )
+
+            db.execute(
+                """
+                INSERT INTO files (
+                    archive_job_id,
+                    original_path,
+                    relative_path,
+                    filename,
+                    size_bytes,
+                    checksum_sha256,
+                    tape_id,
+                    tape_path,
+                    is_spanned,
+                    archived_at,
+                    verified_at
+                )
+                VALUES (
+                    NULL,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    recovered_original_path,
+                    relative_path,
+                    filename,
+                    int(entry["size_bytes"]),
+                    entry.get("sha256"),
+                    tape_id,
+                    tape_path,
+                    is_spanned,
+                    archived_at,
+                    verified_at,
+                ),
+            )
+
+            imported_count += 1
+
+        return {
+            "tape_id": tape_id,
+            "tape_created": tape_created,
+            "label": label,
+            "ltfs_uuid": ltfs_uuid,
+            "files_in_manifest": len(files),
+            "files_imported": imported_count,
+            "files_existing": existing_count,
+        }

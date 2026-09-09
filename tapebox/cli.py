@@ -7,6 +7,7 @@ from tapebox.archive import (
     resume_archive_job,
 )
 from tapebox.verify import verify_file
+from tapebox.recovery import import_loaded_tape
 
 from tapebox.tape import (
     discover_drives,
@@ -421,6 +422,75 @@ def cmd_tape_status(args):
                 f"-"
             )
 
+    print()
+
+
+
+def cmd_tape_import(args):
+    """
+    Recover catalog records from TapeBox metadata on the
+    currently loaded cartridge.
+    """
+
+    result = import_loaded_tape()
+
+    print()
+    print("TapeBox Tape Import")
+    print("-" * 50)
+
+    if not result.get("success"):
+        print(
+            "Status            FAILED"
+        )
+        print(
+            "Error             "
+            + str(
+                result.get(
+                    "error",
+                    "Unknown recovery error",
+                )
+            )
+        )
+        print()
+        return
+
+    print(
+        f"Tape              {result['label']}"
+    )
+
+    print(
+        f"LTFS UUID         {result['ltfs_uuid']}"
+    )
+
+    print(
+        f"Database ID       {result['tape_id']}"
+    )
+
+    print(
+        f"Manifest Files    {result['files_in_manifest']}"
+    )
+
+    print(
+        f"Imported          {result['files_imported']}"
+    )
+
+    print(
+        f"Already Present   {result['files_existing']}"
+    )
+
+    print(
+        "Tape Record       "
+        + (
+            "CREATED"
+            if result["tape_created"]
+            else "EXISTING"
+        )
+    )
+
+    print()
+    print(
+        "Status            COMPLETE"
+    )
     print()
 
 
@@ -970,6 +1040,20 @@ def build_parser():
 
     tape_status.set_defaults(
         func=cmd_tape_status,
+    )
+
+    tape_import = (
+        tape_sub.add_parser(
+            "import",
+            help=(
+                "Recover catalog records from "
+                "TapeBox metadata on the loaded tape"
+            ),
+        )
+    )
+
+    tape_import.set_defaults(
+        func=cmd_tape_import,
     )
 
     #
