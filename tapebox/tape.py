@@ -398,12 +398,87 @@ def _is_mounted(mount_path):
     return result["returncode"] == 0
 
 
+def _wait_for_ltfs_release(
+    mount_path,
+    timeout=60.0,
+    poll_interval=0.25,
+):
+    """
+    Wait until the LTFS process for this mountpoint has exited.
+
+    FUSE may remove the mountpoint before LTFS has completely
+    released the underlying SCSI tape device.
+    """
+    mount_text = str(
+        Path(mount_path)
+    )
+
+    deadline = (
+        time.monotonic()
+        + timeout
+    )
+
+    while time.monotonic() < deadline:
+        result = run_command(
+            [
+                "ps",
+                "-eo",
+                "args=",
+            ],
+            timeout=10,
+        )
+
+        if result["returncode"] != 0:
+            return False, (
+                result["stderr"]
+                or result["stdout"]
+                or "Could not inspect LTFS processes"
+            )
+
+        ltfs_running = False
+
+        for line in result["stdout"].splitlines():
+            line = line.strip()
+
+            if (
+                line.startswith("ltfs ")
+                and mount_text in line
+            ):
+                ltfs_running = True
+                break
+
+        if not ltfs_running:
+            return True, None
+
+        time.sleep(
+            poll_interval
+        )
+
+    return False, (
+        "LTFS filesystem is unmounted, but the LTFS "
+        f"process for {mount_text} did not release "
+        f"within {timeout:.0f} seconds."
+    )
+
+
 def _unmount_ltfs(mount_path):
     """
-    Cleanly unmount an LTFS FUSE filesystem.
+    Cleanly unmount an LTFS FUSE filesystem and wait until
+    the LTFS process has released the tape device.
     """
+
+    mount_path = Path(
+        mount_path
+    )
+
+    #
+    # The FUSE mount may already have disappeared while the
+    # LTFS process is still completing its shutdown.
+    #
     if not _is_mounted(mount_path):
-        return True, None
+        return _wait_for_ltfs_release(
+            mount_path
+        )
 
     result = run_command(
         [
@@ -414,27 +489,31 @@ def _unmount_ltfs(mount_path):
         timeout=30,
     )
 
-    if result["returncode"] == 0:
-        return True, None
+    if result["returncode"] != 0:
+        result = run_command(
+            [
+                "umount",
+                str(mount_path),
+            ],
+            timeout=30,
+        )
 
-    result = run_command(
-        [
-            "umount",
-            str(mount_path),
-        ],
-        timeout=30,
+        if result["returncode"] != 0:
+            error = (
+                result["stderr"]
+                or result["stdout"]
+                or "Unknown unmount error"
+            )
+
+            return False, error
+
+    #
+    # Do not report success merely because FUSE has removed
+    # the mount. LTFS may still own /dev/sg0 for a short time.
+    #
+    return _wait_for_ltfs_release(
+        mount_path
     )
-
-    if result["returncode"] == 0:
-        return True, None
-
-    error = (
-        result["stderr"]
-        or result["stdout"]
-        or "Unknown unmount error"
-    )
-
-    return False, error
 
 
 def get_ltfs_virtual_attribute(

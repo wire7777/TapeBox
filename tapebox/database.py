@@ -482,6 +482,40 @@ def record_archived_file(
         return cursor.lastrowid
 
 
+
+def get_files_by_tape(tape_id):
+    """
+    Return all cataloged files stored on one TapeBox cartridge.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                archive_job_id,
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                checksum_sha256,
+                tape_id,
+                tape_path,
+                is_spanned,
+                archived_at,
+                verified_at
+            FROM files
+            WHERE tape_id = ?
+            ORDER BY id
+            """,
+            (tape_id,),
+        ).fetchall()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
 def list_files():
     """
     Return archived files with their tape information.

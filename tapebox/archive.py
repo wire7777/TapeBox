@@ -1,5 +1,6 @@
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from tapebox.database import (
     create_archive_job,
     get_archive_job,
     get_archive_job_files,
+    get_files_by_tape,
     get_tape_by_uuid,
     record_archived_file,
     update_archive_job,
@@ -28,6 +30,352 @@ COPY_BUFFER_SIZE = 16 * 1024 * 1024
 
 # Leave some breathing room for LTFS metadata/index updates.
 TAPE_FREE_RESERVE_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _write_tape_metadata(
+    mountpoint,
+    tape,
+    loaded_uuid,
+    loaded_name=None,
+):
+    """
+    Write TapeBox cartridge identity metadata atomically.
+
+    The metadata lives at:
+        /.tapebox/tape.json
+
+    A temporary file is written and fsynced before rename so an
+    interrupted write cannot leave a partially written tape.json.
+    """
+    mountpoint = Path(mountpoint)
+
+    metadata_dir = (
+        mountpoint
+        / ".tapebox"
+    )
+
+    metadata_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    metadata_path = (
+        metadata_dir
+        / "tape.json"
+    )
+
+    temporary_path = (
+        metadata_dir
+        / "tape.json.tmp"
+    )
+
+    metadata = {
+        "schema_version": 1,
+        "created_by": "TapeBox",
+        "label": tape["label"],
+        "ltfs_uuid": loaded_uuid,
+        "ltfs_volume_name": (
+            loaded_name
+            or tape["label"]
+        ),
+    }
+
+    # Include generation when it exists in the catalog.
+    try:
+        generation = tape["generation"]
+    except (KeyError, IndexError):
+        generation = None
+
+    if generation:
+        generation_text = str(generation)
+
+        if generation_text.isdigit():
+            generation_text = (
+                f"LTO-{generation_text}"
+            )
+
+        metadata["generation"] = generation_text
+
+    try:
+        with temporary_path.open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(
+                metadata,
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+
+            handle.write("\n")
+            handle.flush()
+            os.fsync(
+                handle.fileno()
+            )
+
+        temporary_path.replace(
+            metadata_path
+        )
+
+        # Flush the directory entry containing the rename.
+        directory_fd = os.open(
+            metadata_dir,
+            os.O_RDONLY,
+        )
+
+        try:
+            os.fsync(
+                directory_fd
+            )
+        finally:
+            os.close(
+                directory_fd
+            )
+
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+    return metadata_path
+
+
+
+
+def _write_tape_manifest(
+    mountpoint,
+    tape,
+):
+    """
+    Rebuild /.tapebox/manifest.json from the SQLite catalog for
+    this cartridge.
+
+    This intentionally rewrites the complete manifest so older
+    cataloged files are automatically backfilled.
+    """
+    mountpoint = Path(mountpoint)
+
+    metadata_dir = (
+        mountpoint
+        / ".tapebox"
+    )
+
+    metadata_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    manifest_path = (
+        metadata_dir
+        / "manifest.json"
+    )
+
+    temporary_path = (
+        metadata_dir
+        / "manifest.json.tmp"
+    )
+
+    rows = get_files_by_tape(
+        tape["id"]
+    )
+
+    files = []
+
+    for row in rows:
+        files.append(
+            {
+                "archive_job_id": row["archive_job_id"],
+                "relative_path": row["relative_path"],
+                "filename": row["filename"],
+                "size_bytes": row["size_bytes"],
+                "sha256": row["checksum_sha256"],
+                "tape_path": row["tape_path"],
+                "archived_at": row["archived_at"],
+                "verified_at": row["verified_at"],
+                "is_spanned": bool(
+                    row["is_spanned"]
+                ),
+            }
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "created_by": "TapeBox",
+        "tape": {
+            "label": tape["label"],
+            "ltfs_uuid": tape["ltfs_uuid"],
+        },
+        "file_count": len(files),
+        "files": files,
+    }
+
+    try:
+        with temporary_path.open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(
+                manifest,
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+
+            handle.write("\n")
+            handle.flush()
+
+            os.fsync(
+                handle.fileno()
+            )
+
+        temporary_path.replace(
+            manifest_path
+        )
+
+        directory_fd = os.open(
+            metadata_dir,
+            os.O_RDONLY,
+        )
+
+        try:
+            os.fsync(
+                directory_fd
+            )
+        finally:
+            os.close(
+                directory_fd
+            )
+
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+    return manifest_path
+
+
+
+def refresh_tape_manifest(
+    tape,
+    mountpoint=ARCHIVE_MOUNTPOINT,
+):
+    """
+    Remount a registered TapeBox cartridge, verify its LTFS UUID,
+    rebuild tape.json and manifest.json from SQLite, then unmount.
+
+    This is intended to run after SQLite has been updated so the
+    on-tape manifest includes the newest catalog records.
+    """
+    mountpoint = Path(mountpoint)
+
+    if _is_mounted(mountpoint):
+        return {
+            "success": False,
+            "error": (
+                f"Manifest mountpoint is already mounted: "
+                f"{mountpoint}"
+            ),
+        }
+
+    mountpoint.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    result = None
+
+    # Give the drive a moment to finish releasing after the previous
+    # LTFS unmount. mount_ltfs() also contains its own retry logic.
+    import time
+    time.sleep(1.0)
+
+    mount_result = mount_ltfs(
+        "/dev/sg0",
+        mountpoint,
+        timeout=120,
+    )
+
+    if not _is_mounted(mountpoint):
+        return {
+            "success": False,
+            "error": (
+                mount_result.get("stderr")
+                or mount_result.get("stdout")
+                or "Could not remount LTFS for manifest update."
+            ),
+        }
+
+    try:
+        loaded_uuid = get_ltfs_virtual_attribute(
+            mountpoint,
+            "ltfs.volumeUUID",
+        )
+
+        loaded_name = get_ltfs_virtual_attribute(
+            mountpoint,
+            "ltfs.volumeName",
+        )
+
+        if not loaded_uuid:
+            raise RuntimeError(
+                "Could not read LTFS UUID during manifest refresh."
+            )
+
+        expected_uuid = tape["ltfs_uuid"]
+
+        if loaded_uuid != expected_uuid:
+            raise RuntimeError(
+                "Wrong cartridge loaded during manifest refresh. "
+                f"Expected UUID {expected_uuid}, "
+                f"found {loaded_uuid}."
+            )
+
+        _write_tape_metadata(
+            mountpoint,
+            tape,
+            loaded_uuid,
+            loaded_name,
+        )
+
+        manifest_path = _write_tape_manifest(
+            mountpoint,
+            tape,
+        )
+
+        run_command(
+            ["sync"],
+            timeout=60,
+        )
+
+        result = {
+            "success": True,
+            "manifest_path": str(
+                manifest_path
+            ),
+            "tape": tape["label"],
+            "ltfs_uuid": loaded_uuid,
+        }
+
+    except Exception as exc:
+        result = {
+            "success": False,
+            "error": str(exc),
+        }
+
+    finally:
+        unmounted, unmount_error = _unmount_ltfs(
+            mountpoint
+        )
+
+        if not unmounted:
+            result = {
+                "success": False,
+                "error": (
+                    "Manifest update finished but LTFS could not "
+                    f"be unmounted cleanly: {unmount_error}"
+                ),
+            }
+
+    return result
 
 
 def archive_file(source_path):
@@ -219,6 +567,13 @@ def archive_file(source_path):
         # UUID passed. Writes are now permitted.
         #
 
+        _write_tape_metadata(
+            ARCHIVE_MOUNTPOINT,
+            tape,
+            tape["ltfs_uuid"],
+            tape["label"],
+        )
+
         archive_root = (
             ARCHIVE_MOUNTPOINT
             / "archive"
@@ -367,9 +722,22 @@ def archive_file(source_path):
         tape_path=final_destination,
     )
 
+    manifest_result = refresh_tape_manifest(
+        tape
+    )
+
     return {
         "success": True,
         "file_id": file_id,
+        "manifest_updated": manifest_result.get(
+            "success",
+            False,
+        ),
+        "manifest_warning": (
+            None
+            if manifest_result.get("success")
+            else manifest_result.get("error")
+        ),
         "source": str(source),
         "filename": source.name,
         "size_bytes": source_size,
@@ -554,6 +922,13 @@ def archive_folder(source_path):
                 f"but only {usage.free} bytes are free. "
                 "Multi-tape folder continuation is not implemented yet."
             )
+
+        _write_tape_metadata(
+            ARCHIVE_MOUNTPOINT,
+            tape,
+            tape["ltfs_uuid"],
+            tape["label"],
+        )
 
         archive_root = (
             ARCHIVE_MOUNTPOINT
@@ -763,6 +1138,22 @@ def archive_folder(source_path):
 
     result["database_ids"] = database_ids
 
+    manifest_result = refresh_tape_manifest(
+        tape
+    )
+
+    result["manifest_updated"] = (
+        manifest_result.get(
+            "success",
+            False,
+        )
+    )
+
+    if not manifest_result.get("success"):
+        result["manifest_warning"] = (
+            manifest_result.get("error")
+        )
+
     return result
 
 
@@ -914,6 +1305,10 @@ def archive_folder_job(source_path, job_id=None):
             status="running",
             error="",
         )
+
+    manifest_result = refresh_tape_manifest(
+        tape
+    )
 
     completed_rows = get_archive_job_files(
         job_id
@@ -1149,6 +1544,13 @@ def archive_folder_job(source_path, job_id=None):
             raise RuntimeError(
                 "__TAPEBOX_NEED_DIFFERENT_TAPE__"
             )
+
+        _write_tape_metadata(
+            ARCHIVE_MOUNTPOINT,
+            tape,
+            tape["ltfs_uuid"],
+            tape["label"],
+        )
 
         archive_root = (
             ARCHIVE_MOUNTPOINT
@@ -1498,6 +1900,15 @@ def archive_folder_job(source_path, job_id=None):
             not all_complete
         ),
         "job_id": job_id,
+        "manifest_updated": manifest_result.get(
+            "success",
+            False,
+        ),
+        "manifest_warning": (
+            None
+            if manifest_result.get("success")
+            else manifest_result.get("error")
+        ),
         "folder": source.name,
         "source_path": str(source),
         "file_count": len(files),
