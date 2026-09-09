@@ -1204,22 +1204,74 @@ def cmd_file_restore(args):
     print(
         f"File              {result['filename']}"
     )
-    print(
-        f"Tape              {result['tape_label']}"
-    )
-    print(
-        f"Tape Path         {result['tape_path']}"
-    )
+
+    #
+    # Spanned restore may successfully restore one or more
+    # parts but still require another cartridge.
+    #
+    if not result.get("completed", True):
+        if result.get("parts_completed") is not None:
+            print(
+                f"Parts             "
+                f"{result['parts_completed']}/"
+                f"{result.get('parts_total', '?')}"
+            )
+
+        if result.get("bytes_completed") is not None:
+            print(
+                f"Restored          "
+                f"{format_bytes(result['bytes_completed'])}"
+            )
+
+        if result.get("partial_destination"):
+            print(
+                f"Partial File      "
+                f"{result['partial_destination']}"
+            )
+
+        if result.get("required_tape"):
+            print(
+                f"Next Tape         "
+                f"{result['required_tape']}"
+            )
+
+        if result.get("required_uuid"):
+            print(
+                f"Next Tape UUID    "
+                f"{result['required_uuid']}"
+            )
+
+        print()
+        print("Status            NEED NEXT TAPE")
+        print()
+        return
+
+    if result.get("tape_label"):
+        print(
+            f"Tape              "
+            f"{result['tape_label']}"
+        )
+
+    if result.get("tape_path"):
+        print(
+            f"Tape Path         "
+            f"{result['tape_path']}"
+        )
+
     print(
         f"Destination       {result['destination']}"
     )
-    print(
-        f"Size              "
-        f"{format_bytes(result['size_bytes'])}"
-    )
-    print(
-        f"SHA256            {result['sha256']}"
-    )
+
+    if result.get("size_bytes") is not None:
+        print(
+            f"Size              "
+            f"{format_bytes(result['size_bytes'])}"
+        )
+
+    if result.get("sha256"):
+        print(
+            f"SHA256            {result['sha256']}"
+        )
 
     print()
     print("Verification      PASSED")

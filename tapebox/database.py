@@ -668,7 +668,8 @@ def get_archive_job_files(job_id):
                 size_bytes,
                 checksum_sha256,
                 tape_id,
-                tape_path
+                tape_path,
+                is_spanned
             FROM files
             WHERE archive_job_id = ?
             ORDER BY id
