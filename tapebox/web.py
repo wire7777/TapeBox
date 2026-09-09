@@ -1,16 +1,24 @@
 import argparse
+from pathlib import Path
 
-from flask import Flask, render_template
+from flask import Flask, render_template, request, redirect, url_for
 
 from tapebox.database import (
     initialize_database,
     list_tapes,
     list_files,
     list_archive_jobs,
+    get_archive_job,
+    get_archive_job_files,
+    get_archive_restore_plan,
     get_tape_by_id,
     get_files_by_tape,
     search_files,
     get_file_parts,
+)
+
+from tapebox.restore import (
+    restore_archive_job,
 )
 
 from tapebox.tape import (
@@ -20,6 +28,9 @@ from tapebox.tape import (
 
 
 app = Flask(__name__)
+
+
+LAST_RESTORE_RESULTS = {}
 
 
 def format_bytes(value):
@@ -158,6 +169,149 @@ def dashboard():
     )
 
 
+
+
+
+@app.route("/jobs")
+def jobs_page():
+    initialize_database()
+
+    jobs = list_archive_jobs()
+
+    return render_template(
+        "jobs.html",
+        active_page="jobs",
+        jobs=jobs,
+    )
+
+
+@app.route("/jobs/<int:job_id>")
+def job_detail_page(job_id):
+    initialize_database()
+
+    plan = get_archive_restore_plan(
+        job_id
+    )
+
+    if plan is None:
+        return (
+            "Archive job not found",
+            404,
+        )
+
+    job = plan["job"]
+    files = plan["files"]
+    tapes = plan["tapes"]
+
+    last_restore = LAST_RESTORE_RESULTS.get(
+        job_id
+    )
+
+    return render_template(
+        "job_detail.html",
+        active_page="jobs",
+        job=job,
+        files=files,
+        tapes=tapes,
+        last_restore=last_restore,
+        default_destination=(
+            "/mnt/tapebox/restored"
+        ),
+    )
+
+
+@app.route(
+    "/jobs/<int:job_id>/restore",
+    methods=["POST"],
+)
+def job_restore_action(job_id):
+    initialize_database()
+
+    plan = get_archive_restore_plan(
+        job_id
+    )
+
+    if plan is None:
+        return (
+            "Archive job not found",
+            404,
+        )
+
+    destination = request.form.get(
+        "destination",
+        "",
+    ).strip()
+
+    if not destination:
+        LAST_RESTORE_RESULTS[job_id] = {
+            "result": {
+                "success": False,
+                "error": (
+                    "Restore destination is required."
+                ),
+            },
+            "messages": [],
+            "destination": destination,
+        }
+
+        return redirect(
+            url_for(
+                "job_detail_page",
+                job_id=job_id,
+            )
+        )
+
+    destination_path = Path(
+        destination
+    )
+
+    if not destination_path.is_absolute():
+        LAST_RESTORE_RESULTS[job_id] = {
+            "result": {
+                "success": False,
+                "error": (
+                    "Restore destination must be "
+                    "an absolute path."
+                ),
+            },
+            "messages": [],
+            "destination": destination,
+        }
+
+        return redirect(
+            url_for(
+                "job_detail_page",
+                job_id=job_id,
+            )
+        )
+
+    progress_messages = []
+
+    try:
+        result = restore_archive_job(
+            job_id,
+            destination_path,
+            progress=progress_messages.append,
+        )
+
+    except Exception as exc:
+        result = {
+            "success": False,
+            "error": str(exc),
+        }
+
+    LAST_RESTORE_RESULTS[job_id] = {
+        "result": result,
+        "messages": progress_messages,
+        "destination": destination,
+    }
+
+    return redirect(
+        url_for(
+            "job_detail_page",
+            job_id=job_id,
+        )
+    )
 
 
 @app.route("/tapes")

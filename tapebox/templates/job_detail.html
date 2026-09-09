@@ -1,0 +1,486 @@
+{% extends "base.html" %}
+
+{% block title %}
+Job #{{ job["id"] }} · TapeBox
+{% endblock %}
+
+{% block content %}
+
+
+<div class="page-header">
+
+    <div>
+
+        <h1>
+            Archive Job #{{ job["id"] }}
+        </h1>
+
+        <p class="path">
+            {{ job["source_path"] }}
+        </p>
+
+    </div>
+
+    <a
+        class="button secondary"
+        href="{{ url_for('jobs_page') }}"
+    >
+        Back to Jobs
+    </a>
+
+</div>
+
+
+<div class="cards">
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Status
+        </div>
+
+        <div class="stat-value small">
+            {{ job["status"] }}
+        </div>
+
+    </div>
+
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Files
+        </div>
+
+        <div class="stat-value">
+            {{ job["total_files"] or 0 }}
+        </div>
+
+    </div>
+
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Archive Size
+        </div>
+
+        <div class="stat-value small">
+            {{ job["total_bytes"] | format_bytes }}
+        </div>
+
+    </div>
+
+
+    <div class="card stat-card">
+
+        <div class="stat-label">
+            Written
+        </div>
+
+        <div class="stat-value small">
+            {{ job["bytes_written"] | format_bytes }}
+        </div>
+
+    </div>
+
+</div>
+
+
+<section class="card">
+
+    <div class="card-header">
+
+        <div>
+            <h2>Required Cartridges</h2>
+
+            <p>
+                Tapes used by this archive
+            </p>
+        </div>
+
+    </div>
+
+
+    {% if tapes %}
+
+    <div class="tape-list">
+
+        {% for tape in tapes %}
+
+        <div class="required-tape">
+
+            <div class="required-tape-label">
+                {{ tape["tape_label"] }}
+            </div>
+
+            <div class="required-tape-uuid">
+                {{ tape["ltfs_uuid"] }}
+            </div>
+
+        </div>
+
+        {% endfor %}
+
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+        No cartridge locations recorded.
+    </div>
+
+    {% endif %}
+
+</section>
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+
+        <div>
+            <h2>Restore Archive</h2>
+
+            <p>
+                Restore or continue this archive job
+            </p>
+        </div>
+
+    </div>
+
+
+    <form
+        method="post"
+        action="{{ url_for('job_restore_action', job_id=job['id']) }}"
+        class="restore-form"
+    >
+
+        <label for="destination">
+            Destination
+        </label>
+
+        <div class="restore-controls">
+
+            <input
+                id="destination"
+                type="text"
+                name="destination"
+                value="{{
+                    last_restore.destination
+                    if last_restore
+                    else default_destination
+                }}"
+                required
+            >
+
+            <button
+                type="submit"
+                onclick="return confirm(
+                    'Start or continue restoring this archive?'
+                );"
+            >
+                Restore / Continue
+            </button>
+
+        </div>
+
+        <div class="form-help">
+            Existing matching files are verified and skipped.
+            TapeBox resumes incomplete spanned restores safely.
+        </div>
+
+    </form>
+
+</section>
+
+
+{% if last_restore %}
+
+{% set result = last_restore.result %}
+
+<section
+    class="
+        card
+        section-gap
+        restore-result
+        {% if result.success %}
+            result-good
+        {% else %}
+            result-error
+        {% endif %}
+    "
+>
+
+    <div class="card-header">
+
+        <div>
+
+            <h2>
+                Last Restore Result
+            </h2>
+
+            <p>
+                {{ last_restore.destination }}
+            </p>
+
+        </div>
+
+    </div>
+
+
+    {% if result.success %}
+
+        {% if result.completed %}
+
+        <div class="restore-big-status good">
+            COMPLETE
+        </div>
+
+        {% else %}
+
+        <div class="restore-big-status waiting">
+            NEED NEXT TAPE
+        </div>
+
+        {% endif %}
+
+
+        <div class="restore-result-grid">
+
+            <div>
+                <span>Files Complete</span>
+                <strong>
+                    {{ result.get("files_completed", 0) }}
+                    /
+                    {{ result.get("files_total", 0) }}
+                </strong>
+            </div>
+
+            <div>
+                <span>Restored Now</span>
+                <strong>
+                    {{ result.get("files_restored_this_run", 0) }}
+                </strong>
+            </div>
+
+            <div>
+                <span>Already Present</span>
+                <strong>
+                    {{ result.get("files_skipped", 0) }}
+                </strong>
+            </div>
+
+            <div>
+                <span>Written Now</span>
+                <strong>
+                    {{
+                        result.get(
+                            "bytes_restored_this_run",
+                            0
+                        )
+                        | format_bytes
+                    }}
+                </strong>
+            </div>
+
+        </div>
+
+
+        {% if result.get("required_tapes") %}
+
+        <div class="next-tape-box">
+
+            <div class="next-tape-title">
+                Insert Next Cartridge
+            </div>
+
+            <div class="next-tapes">
+
+                {% for label in result["required_tapes"] %}
+
+                <span class="next-tape">
+                    {{ label }}
+                </span>
+
+                {% endfor %}
+
+            </div>
+
+            <div class="next-tape-help">
+                Insert the required cartridge, wait for the
+                drive to finish loading, then press
+                Restore / Continue again.
+            </div>
+
+        </div>
+
+        {% endif %}
+
+
+        {% if result.get("auto_ejected") %}
+
+        <div class="eject-message">
+            Cartridge automatically ejected.
+        </div>
+
+        {% endif %}
+
+
+    {% else %}
+
+        <div class="restore-big-status error">
+            RESTORE ERROR
+        </div>
+
+        <div class="error-message">
+            {{
+                result.get(
+                    "error",
+                    "Unknown restore error"
+                )
+            }}
+        </div>
+
+    {% endif %}
+
+
+    {% if last_restore.messages %}
+
+    <div class="progress-log">
+
+        <div class="progress-title">
+            Activity
+        </div>
+
+        {% for message in last_restore.messages %}
+
+        <div class="progress-line">
+            {{ message }}
+        </div>
+
+        {% endfor %}
+
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% endif %}
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+
+        <div>
+            <h2>Files</h2>
+
+            <p>
+                Logical archive contents
+            </p>
+        </div>
+
+    </div>
+
+
+    {% if files %}
+
+    <div class="table-wrap">
+
+    <table>
+
+        <thead>
+
+        <tr>
+            <th>File</th>
+            <th>Path</th>
+            <th>Size</th>
+            <th>Storage</th>
+            <th>Cartridge</th>
+        </tr>
+
+        </thead>
+
+        <tbody>
+
+        {% for file in files %}
+
+        <tr>
+
+            <td class="strong">
+                {{ file["filename"] }}
+            </td>
+
+            <td class="path">
+                {{ file["relative_path"] }}
+            </td>
+
+            <td>
+                {{ file["size_bytes"] | format_bytes }}
+            </td>
+
+            <td>
+
+                {% if file["is_spanned"] %}
+
+                <span class="storage-badge spanned">
+                    SPANNED
+                </span>
+
+                {% else %}
+
+                <span class="storage-badge">
+                    SINGLE TAPE
+                </span>
+
+                {% endif %}
+
+            </td>
+
+            <td>
+
+            {% if file["is_spanned"] %}
+
+                {% for part in file["parts"] %}
+
+                <span class="tape-badge">
+                    {{ part["tape_label"] }}
+                    · P{{ part["part_number"] }}
+                </span>
+
+                {% endfor %}
+
+            {% else %}
+
+                <span class="tape-badge">
+                    {{ file["tape_label"] or "Unknown" }}
+                </span>
+
+            {% endif %}
+
+            </td>
+
+        </tr>
+
+        {% endfor %}
+
+        </tbody>
+
+    </table>
+
+    </div>
+
+    {% else %}
+
+    <div class="empty">
+        No completed files recorded for this job.
+    </div>
+
+    {% endif %}
+
+</section>
+
+
+{% endblock %}

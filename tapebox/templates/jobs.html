@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}
+Archive Jobs · TapeBox
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+
+    <div>
+        <h1>Archive Jobs</h1>
+        <p>
+            Archive history and restore jobs
+        </p>
+    </div>
+
+</div>
+
+
+<section class="card">
+
+{% if jobs %}
+
+<div class="table-wrap">
+
+<table>
+
+<thead>
+<tr>
+    <th>ID</th>
+    <th>Source</th>
+    <th>Status</th>
+    <th>Files</th>
+    <th>Size</th>
+    <th>Written</th>
+</tr>
+</thead>
+
+<tbody>
+
+{% for job in jobs %}
+
+<tr
+    class="click-row"
+    onclick="window.location='{{ url_for('job_detail_page', job_id=job['id']) }}'"
+>
+
+    <td class="strong">
+        #{{ job["id"] }}
+    </td>
+
+    <td class="path">
+        {{ job["source_path"] }}
+    </td>
+
+    <td>
+
+        <span
+            class="job-status
+            job-{{ job['status'] }}"
+        >
+            {{ job["status"] }}
+        </span>
+
+    </td>
+
+    <td>
+        {{ job["total_files"] or 0 }}
+    </td>
+
+    <td>
+        {{ job["total_bytes"] | format_bytes }}
+    </td>
+
+    <td>
+        {{ job["bytes_written"] | format_bytes }}
+    </td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+
+</table>
+
+</div>
+
+{% else %}
+
+<div class="empty">
+    No archive jobs in catalog.
+</div>
+
+{% endif %}
+
+</section>
+
+{% endblock %}

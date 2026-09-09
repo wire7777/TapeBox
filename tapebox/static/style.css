@@ -555,3 +555,270 @@ button:hover {
 
     background: #142238;
 }
+
+.tape-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.required-tape {
+    min-width: 260px;
+
+    padding: 13px 15px;
+
+    border: 1px solid #304158;
+
+    background: #101a28;
+}
+
+.required-tape-label {
+    color: #84b9f2;
+
+    font-size: 14px;
+    font-weight: 650;
+}
+
+.required-tape-uuid {
+    margin-top: 6px;
+
+    color: #69798d;
+
+    font-family:
+        "SFMono-Regular",
+        Consolas,
+        "Liberation Mono",
+        monospace;
+
+    font-size: 10px;
+}
+
+.restore-form label {
+    display: block;
+
+    margin-bottom: 8px;
+
+    color: #939dab;
+
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.restore-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.restore-controls input {
+    flex: 1;
+
+    min-width: 250px;
+    height: 40px;
+
+    padding: 0 13px;
+
+    border: 1px solid #303846;
+    outline: none;
+
+    background: #0c1118;
+    color: #edf0f5;
+
+    font-family:
+        "SFMono-Regular",
+        Consolas,
+        monospace;
+
+    font-size: 13px;
+}
+
+.restore-controls input:focus {
+    border-color: #2e7df6;
+}
+
+.form-help {
+    margin-top: 9px;
+
+    color: #66717f;
+
+    font-size: 11px;
+}
+
+.restore-result {
+    border-left-width: 3px;
+}
+
+.restore-result.result-good {
+    border-left-color: #3f9f69;
+}
+
+.restore-result.result-error {
+    border-left-color: #d05a5a;
+}
+
+.restore-big-status {
+    margin-bottom: 20px;
+
+    font-size: 22px;
+    font-weight: 750;
+}
+
+.restore-big-status.good {
+    color: #64d895;
+}
+
+.restore-big-status.waiting {
+    color: #e6bd64;
+}
+
+.restore-big-status.error {
+    color: #ee7474;
+}
+
+.restore-result-grid {
+    display: grid;
+
+    grid-template-columns:
+        repeat(4, minmax(0, 1fr));
+
+    border-top: 1px solid #252d38;
+    border-bottom: 1px solid #252d38;
+}
+
+.restore-result-grid > div {
+    padding: 15px;
+
+    border-right: 1px solid #252d38;
+}
+
+.restore-result-grid > div:last-child {
+    border-right: 0;
+}
+
+.restore-result-grid span {
+    display: block;
+
+    margin-bottom: 6px;
+
+    color: #778291;
+
+    font-size: 11px;
+}
+
+.restore-result-grid strong {
+    color: #edf0f5;
+
+    font-size: 16px;
+}
+
+.next-tape-box {
+    margin-top: 18px;
+
+    padding: 16px;
+
+    border: 1px solid #685529;
+
+    background: #211c11;
+}
+
+.next-tape-title {
+    color: #e5bc61;
+
+    font-size: 12px;
+    font-weight: 650;
+
+    text-transform: uppercase;
+}
+
+.next-tapes {
+    margin-top: 10px;
+}
+
+.next-tape {
+    display: inline-block;
+
+    margin-right: 6px;
+
+    padding: 6px 10px;
+
+    border: 1px solid #8a7033;
+
+    color: #f0ca73;
+
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.next-tape-help {
+    margin-top: 11px;
+
+    color: #9a8962;
+
+    font-size: 11px;
+}
+
+.eject-message {
+    margin-top: 15px;
+
+    color: #64d895;
+
+    font-size: 12px;
+}
+
+.error-message {
+    padding: 13px;
+
+    border: 1px solid #693c3c;
+
+    background: #241414;
+
+    color: #e99a9a;
+
+    font-family:
+        "SFMono-Regular",
+        Consolas,
+        monospace;
+
+    font-size: 12px;
+
+    white-space: pre-wrap;
+}
+
+.progress-log {
+    margin-top: 18px;
+
+    padding-top: 15px;
+
+    border-top: 1px solid #252d38;
+}
+
+.progress-title {
+    margin-bottom: 8px;
+
+    color: #808b99;
+
+    font-size: 11px;
+    font-weight: 650;
+
+    text-transform: uppercase;
+}
+
+.progress-line {
+    padding: 4px 0;
+
+    color: #a5aebb;
+
+    font-family:
+        "SFMono-Regular",
+        Consolas,
+        monospace;
+
+    font-size: 11px;
+}
+
+@media (max-width: 900px) {
+
+    .restore-result-grid {
+        grid-template-columns:
+            repeat(2, minmax(0, 1fr));
+    }
+}

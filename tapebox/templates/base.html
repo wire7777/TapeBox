@@ -63,7 +63,10 @@
                 Files
             </a>
 
-            <a href="#">
+            <a
+                href="{{ url_for('jobs_page') }}"
+                class="{% if active_page == 'jobs' %}active{% endif %}"
+            >
                 Archive Jobs
             </a>
 
