@@ -1045,3 +1045,225 @@ def import_tape_manifest_records(
             "files_imported": imported_count,
             "files_existing": existing_count,
         }
+
+
+BACKUP_DIR = Path("/var/lib/tapebox/backups")
+
+
+def backup_catalog():
+    """
+    Create a consistent SQLite backup using SQLite's backup API.
+
+    Returns a dict containing the backup path and size.
+    """
+
+    BACKUP_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    timestamp = datetime.now(
+        timezone.utc
+    ).strftime("%Y%m%d-%H%M%S")
+
+    backup_path = (
+        BACKUP_DIR
+        / f"catalog-{timestamp}.db"
+    )
+
+    source = sqlite3.connect(
+        DB_PATH,
+    )
+
+    destination = sqlite3.connect(
+        backup_path,
+    )
+
+    try:
+        source.backup(
+            destination
+        )
+
+        destination.execute(
+            "PRAGMA wal_checkpoint(FULL)"
+        )
+
+        destination.commit()
+
+    finally:
+        destination.close()
+        source.close()
+
+    size_bytes = backup_path.stat().st_size
+
+    return {
+        "success": True,
+        "path": str(backup_path),
+        "size_bytes": size_bytes,
+    }
+
+
+def validate_catalog_database(path):
+    """
+    Validate a TapeBox SQLite catalog before restore.
+    """
+
+    path = Path(path)
+
+    if not path.is_file():
+        return {
+            "success": False,
+            "error": f"Backup file does not exist: {path}",
+        }
+
+    try:
+        db = sqlite3.connect(
+            path,
+        )
+
+        db.row_factory = sqlite3.Row
+
+        integrity = db.execute(
+            "PRAGMA integrity_check"
+        ).fetchone()[0]
+
+        if integrity != "ok":
+            return {
+                "success": False,
+                "error": (
+                    "SQLite integrity check failed: "
+                    f"{integrity}"
+                ),
+            }
+
+        required_tables = {
+            "tapes",
+            "files",
+            "archive_jobs",
+            "file_parts",
+            "job_events",
+        }
+
+        rows = db.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+            """
+        ).fetchall()
+
+        existing_tables = {
+            row["name"]
+            for row in rows
+        }
+
+        missing = sorted(
+            required_tables
+            - existing_tables
+        )
+
+        if missing:
+            return {
+                "success": False,
+                "error": (
+                    "Backup is missing required table(s): "
+                    + ", ".join(missing)
+                ),
+            }
+
+        tape_count = db.execute(
+            "SELECT COUNT(*) FROM tapes"
+        ).fetchone()[0]
+
+        file_count = db.execute(
+            "SELECT COUNT(*) FROM files"
+        ).fetchone()[0]
+
+        return {
+            "success": True,
+            "path": str(path),
+            "tapes": tape_count,
+            "files": file_count,
+        }
+
+    except sqlite3.Error as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def restore_catalog(backup_path):
+    """
+    Restore the TapeBox catalog from a validated SQLite backup.
+
+    A pre-restore backup of the current live catalog is created first.
+    """
+
+    backup_path = Path(
+        backup_path
+    )
+
+    validation = validate_catalog_database(
+        backup_path
+    )
+
+    if not validation.get(
+        "success"
+    ):
+        return validation
+
+    #
+    # Protect the current live DB before touching it.
+    #
+    pre_restore = backup_catalog()
+
+    #
+    # Restore using SQLite's backup API rather than raw file copying.
+    #
+    source = sqlite3.connect(
+        backup_path,
+    )
+
+    destination = sqlite3.connect(
+        DB_PATH,
+    )
+
+    try:
+        source.backup(
+            destination
+        )
+
+        destination.commit()
+
+        integrity = destination.execute(
+            "PRAGMA integrity_check"
+        ).fetchone()[0]
+
+        if integrity != "ok":
+            raise RuntimeError(
+                "Restored database failed integrity check: "
+                f"{integrity}"
+            )
+
+    finally:
+        destination.close()
+        source.close()
+
+    return {
+        "success": True,
+        "restored_from": str(
+            backup_path
+        ),
+        "pre_restore_backup": (
+            pre_restore["path"]
+        ),
+        "tapes": validation["tapes"],
+        "files": validation["files"],
+    }

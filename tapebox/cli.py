@@ -23,6 +23,9 @@ from tapebox.database import (
     reconcile_loaded_tape,
     list_files,
     list_archive_jobs,
+    backup_catalog,
+    validate_catalog_database,
+    restore_catalog,
 )
 
 
@@ -546,6 +549,98 @@ def cmd_catalog_scan_tape(args):
             if result["tape_created"]
             else "EXISTING"
         )
+    )
+
+    print()
+    print("Status            COMPLETE")
+    print()
+
+
+
+def cmd_catalog_backup(args):
+    """
+    Create a consistent backup of the TapeBox SQLite catalog.
+    """
+
+    print()
+    print("TapeBox Catalog Backup")
+    print("-" * 50)
+
+    try:
+        result = backup_catalog()
+
+    except Exception as exc:
+        print("Status            FAILED")
+        print(f"Error             {exc}")
+        print()
+        return
+
+    print(
+        f"Backup            {result['path']}"
+    )
+    print(
+        f"Size              "
+        f"{format_bytes(result['size_bytes'])}"
+    )
+    print()
+    print("Status            COMPLETE")
+    print()
+
+
+
+def cmd_catalog_restore(args):
+    """
+    Restore the TapeBox catalog from a SQLite backup.
+    """
+
+    backup_path = args.backup
+
+    print()
+    print("TapeBox Catalog Restore")
+    print("-" * 50)
+    print(f"Backup            {backup_path}")
+    print()
+
+    validation = validate_catalog_database(
+        backup_path
+    )
+
+    if not validation.get("success"):
+        print("Status            FAILED")
+        print(
+            "Error             "
+            + str(validation.get("error"))
+        )
+        print()
+        return
+
+    print(
+        f"Backup Tapes      {validation['tapes']}"
+    )
+    print(
+        f"Backup Files      {validation['files']}"
+    )
+
+    print()
+
+    try:
+        result = restore_catalog(
+            backup_path
+        )
+
+    except Exception as exc:
+        print("Status            FAILED")
+        print(f"Error             {exc}")
+        print()
+        return
+
+    print(
+        "Pre-Restore Copy  "
+        f"{result['pre_restore_backup']}"
+    )
+    print(
+        "Restored From     "
+        f"{result['restored_from']}"
     )
 
     print()
@@ -1145,6 +1240,39 @@ def build_parser():
 
     catalog_scan.set_defaults(
         func=cmd_catalog_scan_tape,
+    )
+
+    catalog_backup = (
+        catalog_sub.add_parser(
+            "backup",
+            help=(
+                "Create a consistent SQLite catalog backup"
+            ),
+        )
+    )
+
+    catalog_backup.set_defaults(
+        func=cmd_catalog_backup,
+    )
+
+    catalog_restore = (
+        catalog_sub.add_parser(
+            "restore",
+            help=(
+                "Restore catalog from a SQLite backup"
+            ),
+        )
+    )
+
+    catalog_restore.add_argument(
+        "backup",
+        help=(
+            "Path to TapeBox catalog backup"
+        ),
+    )
+
+    catalog_restore.set_defaults(
+        func=cmd_catalog_restore,
     )
 
     #
