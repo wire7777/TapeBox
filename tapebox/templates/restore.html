@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}
+Restore · TapeBox
+{% endblock %}
+
+
+{% block content %}
+
+<div class="page-header">
+
+    <div>
+        <h1>Restore</h1>
+
+        <p>
+            Restore archived data from TapeBox
+        </p>
+    </div>
+
+</div>
+
+
+<section class="card">
+
+    <div class="card-header">
+
+        <div>
+            <h2>Archive Jobs</h2>
+
+            <p>
+                Select an archive to restore
+            </p>
+        </div>
+
+    </div>
+
+
+    {% if jobs %}
+
+    <div class="table-wrap">
+
+        <table>
+
+            <thead>
+
+            <tr>
+                <th>ID</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Files</th>
+                <th>Size</th>
+                <th></th>
+            </tr>
+
+            </thead>
+
+
+            <tbody>
+
+            {% for job in jobs %}
+
+            <tr>
+
+                <td class="strong">
+                    #{{ job["id"] }}
+                </td>
+
+                <td class="path">
+                    {{ job["source_path"] }}
+                </td>
+
+                <td>
+                    {{ job["status"] }}
+                </td>
+
+                <td>
+                    {{ job["total_files"] or 0 }}
+                </td>
+
+                <td>
+                    {{
+                        (job["total_bytes"] or 0)
+                        | format_bytes
+                    }}
+                </td>
+
+                <td>
+                    <a
+                        class="action-button"
+                        href="{{
+                            url_for(
+                                'job_detail_page',
+                                job_id=job['id']
+                            )
+                        }}"
+                    >
+                        Restore
+                    </a>
+                </td>
+
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    {% else %}
+
+    <div class="empty-state">
+        No archive jobs found.
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

@@ -70,13 +70,13 @@
                 Archive Jobs
             </a>
 
-            <a href="#">
+            <a
+                href="{{ url_for('restore_page') }}"
+                class="{% if active_page == 'restore' %}active{% endif %}"
+            >
                 Restore
             </a>
 
-            <a href="#">
-                Settings
-            </a>
 
         </nav>
 
@@ -95,6 +95,9 @@
     </main>
 
 </div>
+
+{% block scripts %}
+{% endblock %}
 
 </body>
 </html>

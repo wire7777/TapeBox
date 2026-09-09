@@ -150,6 +150,29 @@ Job #{{ job["id"] }} · TapeBox
     </div>
 
 
+    <div
+        id="tape-drive-status"
+        class="tape-drive-status offline"
+    >
+        <div class="tape-drive-status-main">
+            <span
+                id="tape-drive-dot"
+                class="tape-drive-dot"
+            ></span>
+
+            <strong id="tape-drive-state">
+                CHECKING DRIVE
+            </strong>
+        </div>
+
+        <div
+            id="tape-drive-detail"
+            class="tape-drive-detail"
+        >
+            Checking tape drive status...
+        </div>
+    </div>
+
     <form
         method="post"
         action="{{ url_for('job_restore_action', job_id=job['id']) }}"
@@ -192,6 +215,91 @@ Job #{{ job["id"] }} · TapeBox
 
     </form>
 
+    <div
+        id="restore-live"
+        class="restore-live"
+        hidden
+    >
+        <div class="restore-live-header">
+            <div>
+                <div class="progress-title">
+                    Restore Activity
+                </div>
+                <div
+                    id="restore-live-message"
+                    class="restore-live-message"
+                >
+                    Starting restore...
+                </div>
+            </div>
+
+            <div
+                id="restore-live-status"
+                class="restore-live-status"
+            >
+                STARTING
+            </div>
+        </div>
+
+        <div class="restore-progress-track">
+            <div
+                id="restore-progress-bar"
+                class="restore-progress-bar"
+                style="width: 0%"
+            ></div>
+        </div>
+
+        <div class="restore-progress-stats">
+            <div>
+                <span>Progress</span>
+                <strong id="restore-percent">
+                    0.0%
+                </strong>
+            </div>
+
+            <div>
+                <span>Written</span>
+                <strong id="restore-written">
+                    -
+                </strong>
+            </div>
+
+            <div>
+                <span>Speed</span>
+                <strong id="restore-speed">
+                    -
+                </strong>
+            </div>
+
+            <div>
+                <span>Elapsed</span>
+                <strong id="restore-elapsed">
+                    -
+                </strong>
+            </div>
+
+            <div>
+                <span>ETA</span>
+                <strong id="restore-eta">
+                    -
+                </strong>
+            </div>
+
+            <div>
+                <span>Part</span>
+                <strong id="restore-part">
+                    -
+                </strong>
+            </div>
+        </div>
+
+        <div
+            id="restore-live-log"
+            class="progress-log"
+        >
+        </div>
+    </div>
+
 </section>
 
 
@@ -200,6 +308,7 @@ Job #{{ job["id"] }} · TapeBox
 {% set result = last_restore.result %}
 
 <section
+    id="last-restore-result"
     class="
         card
         section-gap
@@ -483,4 +592,552 @@ Job #{{ job["id"] }} · TapeBox
 </section>
 
 
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+(() => {
+    const form = document.querySelector(
+        ".restore-form"
+    );
+
+    if (!form) {
+        return;
+    }
+
+    const panel = document.getElementById(
+        "restore-live"
+    );
+
+    const lastRestoreResult = document.getElementById(
+        "last-restore-result"
+    );
+
+    const message = document.getElementById(
+        "restore-live-message"
+    );
+
+    const status = document.getElementById(
+        "restore-live-status"
+    );
+
+    const bar = document.getElementById(
+        "restore-progress-bar"
+    );
+
+    const percent = document.getElementById(
+        "restore-percent"
+    );
+
+    const written = document.getElementById(
+        "restore-written"
+    );
+
+    const speed = document.getElementById(
+        "restore-speed"
+    );
+
+    const elapsed = document.getElementById(
+        "restore-elapsed"
+    );
+
+    const eta = document.getElementById(
+        "restore-eta"
+    );
+
+    const part = document.getElementById(
+        "restore-part"
+    );
+
+    const log = document.getElementById(
+        "restore-live-log"
+    );
+
+    const submitButton = form.querySelector(
+        'button[type="submit"]'
+    );
+
+
+    function formatBytes(value) {
+        if (
+            value === null
+            || value === undefined
+        ) {
+            return "-";
+        }
+
+        const units = [
+            "B",
+            "KB",
+            "MB",
+            "GB",
+            "TB"
+        ];
+
+        let number = Number(value);
+        let unit = 0;
+
+        while (
+            number >= 1000
+            && unit < units.length - 1
+        ) {
+            number /= 1000;
+            unit++;
+        }
+
+        return (
+            number.toFixed(
+                unit === 0 ? 0 : 2
+            )
+            + " "
+            + units[unit]
+        );
+    }
+
+
+    function formatDuration(value) {
+        if (
+            value === null
+            || value === undefined
+            || !Number.isFinite(
+                Number(value)
+            )
+        ) {
+            return "-";
+        }
+
+        let seconds = Math.max(
+            0,
+            Math.round(Number(value))
+        );
+
+        const hours = Math.floor(
+            seconds / 3600
+        );
+
+        seconds %= 3600;
+
+        const minutes = Math.floor(
+            seconds / 60
+        );
+
+        seconds %= 60;
+
+        if (hours) {
+            return (
+                hours
+                + "h "
+                + minutes
+                + "m "
+                + seconds
+                + "s"
+            );
+        }
+
+        if (minutes) {
+            return (
+                minutes
+                + "m "
+                + seconds
+                + "s"
+            );
+        }
+
+        return seconds + "s";
+    }
+
+
+    function renderLog(messages) {
+        log.innerHTML = "";
+
+        for (
+            const entry
+            of messages || []
+        ) {
+            const line = document.createElement(
+                "div"
+            );
+
+            line.className = "progress-line";
+            line.textContent = entry;
+
+            log.appendChild(line);
+        }
+    }
+
+
+    function renderOperation(operation) {
+        panel.hidden = false;
+
+        message.textContent = (
+            operation.message
+            || "Working..."
+        );
+
+        status.textContent = (
+            operation.status
+            || "running"
+        ).replaceAll(
+            "_",
+            " "
+        ).toUpperCase();
+
+        renderLog(
+            operation.messages
+        );
+
+        const transfer = operation.transfer;
+
+        if (transfer) {
+            const pct = Math.max(
+                0,
+                Math.min(
+                    100,
+                    Number(
+                        transfer.percent || 0
+                    )
+                )
+            );
+
+            bar.style.width = pct + "%";
+
+            percent.textContent = (
+                pct.toFixed(1) + "%"
+            );
+
+            written.textContent = (
+                formatBytes(
+                    transfer.bytes_written
+                )
+                + " / "
+                + formatBytes(
+                    transfer.bytes_total
+                )
+            );
+
+            speed.textContent = (
+                formatBytes(
+                    transfer.speed_bps
+                )
+                + "/s"
+            );
+
+            elapsed.textContent = (
+                formatDuration(
+                    transfer.elapsed_seconds
+                )
+            );
+
+            eta.textContent = (
+                formatDuration(
+                    transfer.eta_seconds
+                )
+            );
+
+            if (
+                transfer.part_number
+                && transfer.parts_total
+            ) {
+                part.textContent = (
+                    transfer.part_number
+                    + " / "
+                    + transfer.parts_total
+                );
+            } else {
+                part.textContent = "-";
+            }
+        }
+
+        const finished = [
+            "completed",
+            "failed",
+            "waiting_for_tape"
+        ].includes(
+            operation.status
+        );
+
+        if (finished) {
+            restoreRunning = false;
+            updateRestoreButton();
+
+            if (
+                operation.status
+                === "completed"
+            ) {
+                bar.style.width = "100%";
+                percent.textContent = "100%";
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+
+    async function pollRestoreOperation(
+        operationId
+    ) {
+        try {
+            const response = await fetch(
+                "/api/operations/"
+                + encodeURIComponent(
+                    operationId
+                ),
+                {
+                    cache: "no-store"
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.error
+                    || "Could not read restore status."
+                );
+            }
+
+            const finished = renderOperation(
+                data.operation
+            );
+
+            if (finished) {
+                //
+                // Reload so the normal server-rendered
+                // Last Restore Result is refreshed.
+                //
+                window.setTimeout(
+                    () => {
+                        window.location.reload();
+                    },
+                    1200
+                );
+
+                return;
+            }
+
+            window.setTimeout(
+                () => {
+                    pollRestoreOperation(
+                        operationId
+                    );
+                },
+                1000
+            );
+
+        } catch (error) {
+            message.textContent = error.message;
+            status.textContent = "ERROR";
+            restoreRunning = false;
+            updateRestoreButton();
+        }
+    }
+
+
+    const drivePanel = document.getElementById(
+        "tape-drive-status"
+    );
+
+    const driveState = document.getElementById(
+        "tape-drive-state"
+    );
+
+    const driveDetail = document.getElementById(
+        "tape-drive-detail"
+    );
+
+    let driveReady = false;
+    let restoreRunning = false;
+
+
+    function updateRestoreButton() {
+        submitButton.disabled = (
+            !driveReady
+            || restoreRunning
+        );
+    }
+
+
+    async function pollTapeStatus() {
+        try {
+            const response = await fetch(
+                "/api/tape/status",
+                {
+                    cache: "no-store"
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.error
+                    || "Could not read tape status."
+                );
+            }
+
+            driveReady = Boolean(
+                data.online
+                && data.available
+            );
+
+            if (driveReady) {
+                drivePanel.classList.remove(
+                    "offline"
+                );
+
+                drivePanel.classList.add(
+                    "online"
+                );
+
+                driveState.textContent = (
+                    "TAPE ONLINE"
+                );
+
+                driveDetail.textContent = (
+                    (data.drive || "Tape Drive")
+                    + " · "
+                    + (data.density || "Ready")
+                );
+
+            } else {
+                drivePanel.classList.remove(
+                    "online"
+                );
+
+                drivePanel.classList.add(
+                    "offline"
+                );
+
+                driveState.textContent = (
+                    data.detected
+                    ? "TAPE OFFLINE"
+                    : "NO DRIVE"
+                );
+
+                driveDetail.textContent = (
+                    data.detected
+                    ? "Insert cartridge and wait for the drive to become ready."
+                    : "No tape drive detected."
+                );
+            }
+
+            updateRestoreButton();
+
+        } catch (error) {
+            driveReady = false;
+
+            drivePanel.classList.remove(
+                "online"
+            );
+
+            drivePanel.classList.add(
+                "offline"
+            );
+
+            driveState.textContent = (
+                "STATUS ERROR"
+            );
+
+            driveDetail.textContent = (
+                error.message
+            );
+
+            updateRestoreButton();
+        }
+
+        window.setTimeout(
+            pollTapeStatus,
+            2000
+        );
+    }
+
+
+    pollTapeStatus();
+
+
+    form.addEventListener(
+        "submit",
+        async (event) => {
+            event.preventDefault();
+
+            if (
+                !window.confirm(
+                    "Start or continue restoring "
+                    + "this archive?"
+                )
+            ) {
+                return;
+            }
+
+            panel.hidden = false;
+
+            if (lastRestoreResult) {
+                lastRestoreResult.hidden = true;
+            }
+
+            restoreRunning = true;
+            updateRestoreButton();
+
+            message.textContent = (
+                "Starting restore..."
+            );
+
+            status.textContent = "STARTING";
+
+            bar.style.width = "0%";
+            percent.textContent = "0.0%";
+            written.textContent = "-";
+            speed.textContent = "-";
+            elapsed.textContent = "-";
+            eta.textContent = "-";
+            part.textContent = "-";
+
+            renderLog([
+                "Starting restore..."
+            ]);
+
+            try {
+                const response = await fetch(
+                    form.action,
+                    {
+                        method: "POST",
+                        body: new FormData(form),
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(
+                        data.error
+                        || "Could not start restore."
+                    );
+                }
+
+                pollRestoreOperation(
+                    data.operation_id
+                );
+
+            } catch (error) {
+                message.textContent = error.message;
+                status.textContent = "ERROR";
+
+                restoreRunning = false;
+                updateRestoreButton();
+            }
+        }
+    );
+
+    //
+    // Remove the old inline confirmation because
+    // this handler now owns confirmation.
+    //
+    submitButton.removeAttribute(
+        "onclick"
+    );
+})();
+</script>
 {% endblock %}

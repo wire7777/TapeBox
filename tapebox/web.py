@@ -1,7 +1,16 @@
 import argparse
+import threading
+import uuid
 from pathlib import Path
 
-from flask import Flask, render_template, request, redirect, url_for
+from flask import (
+    Flask,
+    jsonify,
+    render_template,
+    request,
+    redirect,
+    url_for,
+)
 
 from tapebox.database import (
     initialize_database,
@@ -31,6 +40,200 @@ app = Flask(__name__)
 
 
 LAST_RESTORE_RESULTS = {}
+
+#
+# TapeBox currently owns one physical tape drive, so only one
+# restore/archive tape operation may be active at a time.
+#
+OPERATION_STATE_LOCK = threading.Lock()
+
+OPERATIONS = {}
+
+ACTIVE_TAPE_OPERATION_ID = None
+
+
+def _operation_snapshot(operation):
+    """
+    Return a JSON-safe copy of operation state.
+    """
+
+    return {
+        "id": operation["id"],
+        "type": operation["type"],
+        "job_id": operation["job_id"],
+        "destination": operation["destination"],
+        "status": operation["status"],
+        "message": operation["message"],
+        "messages": list(
+            operation["messages"]
+        ),
+        "transfer": (
+            dict(operation["transfer"])
+            if operation["transfer"]
+            else None
+        ),
+        "result": operation["result"],
+    }
+
+
+def _restore_worker(
+    operation_id,
+    job_id,
+    destination,
+):
+    """
+    Run one archive-job restore outside the HTTP request thread.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    def progress(event):
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is None:
+                return
+
+            if isinstance(event, dict):
+                message = str(
+                    event.get(
+                        "message",
+                        "",
+                    )
+                )
+
+                operation["message"] = message
+
+                if (
+                    event.get("type")
+                    in {
+                        "transfer",
+                        "transfer_start",
+                    }
+                ):
+                    #
+                    # Keep only the latest high-frequency transfer
+                    # sample. The browser does not need thousands
+                    # of 16 MiB copy events in its activity log.
+                    #
+                    operation["transfer"] = dict(
+                        event
+                    )
+
+                    if (
+                        event.get("type")
+                        == "transfer_start"
+                        and message
+                    ):
+                        operation["messages"].append(
+                            message
+                        )
+
+                elif message:
+                    operation["messages"].append(
+                        message
+                    )
+
+            else:
+                message = str(event)
+
+                operation["message"] = message
+                operation["messages"].append(
+                    message
+                )
+
+    #
+    # Tell restore.py that this callback accepts structured events.
+    #
+    progress.tapebox_structured_progress = True
+
+    try:
+        result = restore_archive_job(
+            job_id,
+            Path(destination),
+            progress=progress,
+        )
+
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS[
+                operation_id
+            ]
+
+            operation["result"] = result
+
+            if result.get("success"):
+                if result.get(
+                    "completed",
+                    False,
+                ):
+                    operation["status"] = (
+                        "completed"
+                    )
+
+                    operation["message"] = (
+                        "Restore complete."
+                    )
+
+                else:
+                    operation["status"] = (
+                        "waiting_for_tape"
+                    )
+
+                    operation["message"] = (
+                        "Insert the next required "
+                        "cartridge."
+                    )
+
+            else:
+                operation["status"] = "failed"
+
+                operation["message"] = (
+                    result.get(
+                        "error",
+                        "Restore failed.",
+                    )
+                )
+
+            LAST_RESTORE_RESULTS[job_id] = {
+                "result": result,
+                "messages": list(
+                    operation["messages"]
+                ),
+                "destination": destination,
+            }
+
+    except Exception as exc:
+        result = {
+            "success": False,
+            "error": str(exc),
+        }
+
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS[
+                operation_id
+            ]
+
+            operation["result"] = result
+            operation["status"] = "failed"
+            operation["message"] = str(exc)
+
+            LAST_RESTORE_RESULTS[job_id] = {
+                "result": result,
+                "messages": list(
+                    operation["messages"]
+                ),
+                "destination": destination,
+            }
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
 
 
 def format_bytes(value):
@@ -225,6 +428,8 @@ def job_detail_page(job_id):
     methods=["POST"],
 )
 def job_restore_action(job_id):
+    global ACTIVE_TAPE_OPERATION_ID
+
     initialize_database()
 
     plan = get_archive_restore_plan(
@@ -232,10 +437,14 @@ def job_restore_action(job_id):
     )
 
     if plan is None:
-        return (
-            "Archive job not found",
-            404,
-        )
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Archive job not found."
+                ),
+            }
+        ), 404
 
     destination = request.form.get(
         "destination",
@@ -243,74 +452,249 @@ def job_restore_action(job_id):
     ).strip()
 
     if not destination:
-        LAST_RESTORE_RESULTS[job_id] = {
-            "result": {
+        return jsonify(
+            {
                 "success": False,
                 "error": (
                     "Restore destination is required."
                 ),
-            },
-            "messages": [],
-            "destination": destination,
-        }
-
-        return redirect(
-            url_for(
-                "job_detail_page",
-                job_id=job_id,
-            )
-        )
+            }
+        ), 400
 
     destination_path = Path(
         destination
     )
 
     if not destination_path.is_absolute():
-        LAST_RESTORE_RESULTS[job_id] = {
-            "result": {
+        return jsonify(
+            {
                 "success": False,
                 "error": (
                     "Restore destination must be "
                     "an absolute path."
                 ),
-            },
-            "messages": [],
+            }
+        ), 400
+
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "already running."
+                    ),
+                    "operation": (
+                        _operation_snapshot(active)
+                        if active
+                        else None
+                    ),
+                }
+            ), 409
+
+        operation_id = uuid.uuid4().hex
+
+        operation = {
+            "id": operation_id,
+            "type": "restore_job",
+            "job_id": job_id,
             "destination": destination,
+            "status": "starting",
+            "message": (
+                "Starting restore..."
+            ),
+            "messages": [
+                "Starting restore..."
+            ],
+            "transfer": None,
+            "result": None,
         }
 
-        return redirect(
-            url_for(
-                "job_detail_page",
-                job_id=job_id,
-            )
+        OPERATIONS[operation_id] = (
+            operation
         )
 
-    progress_messages = []
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_id
+        )
+
+    worker = threading.Thread(
+        target=_restore_worker,
+        args=(
+            operation_id,
+            job_id,
+            destination,
+        ),
+        daemon=True,
+        name=(
+            f"tapebox-restore-{operation_id[:8]}"
+        ),
+    )
 
     try:
-        result = restore_archive_job(
-            job_id,
-            destination_path,
-            progress=progress_messages.append,
-        )
+        worker.start()
 
     except Exception as exc:
-        result = {
-            "success": False,
-            "error": str(exc),
+        with OPERATION_STATE_LOCK:
+            operation["status"] = "failed"
+            operation["message"] = str(exc)
+            operation["result"] = {
+                "success": False,
+                "error": str(exc),
+            }
+
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = (
+                    None
+                )
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "operation_id": operation_id,
         }
+    )
 
-    LAST_RESTORE_RESULTS[job_id] = {
-        "result": result,
-        "messages": progress_messages,
-        "destination": destination,
-    }
 
-    return redirect(
-        url_for(
-            "job_detail_page",
-            job_id=job_id,
+@app.route(
+    "/api/operations/<operation_id>"
+)
+def operation_status(operation_id):
+    with OPERATION_STATE_LOCK:
+        operation = OPERATIONS.get(
+            operation_id
         )
+
+        if operation is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Operation not found."
+                    ),
+                }
+            ), 404
+
+        snapshot = _operation_snapshot(
+            operation
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "operation": snapshot,
+        }
+    )
+
+
+@app.route("/api/tape/status")
+def tape_status_api():
+    drives = discover_drives()
+
+    if not drives:
+        return jsonify(
+            {
+                "success": True,
+                "detected": False,
+                "online": False,
+                "available": False,
+                "drive": None,
+                "device": None,
+                "density": None,
+                "write_protected": False,
+                "beginning_of_tape": False,
+            }
+        )
+
+    drive = drives[0]
+
+    nst_device = drive.get(
+        "nst_device"
+    )
+
+    if not nst_device:
+        return jsonify(
+            {
+                "success": True,
+                "detected": True,
+                "online": False,
+                "available": False,
+                "drive": drive.get(
+                    "description",
+                    "Tape Drive",
+                ),
+                "device": None,
+                "density": None,
+                "write_protected": False,
+                "beginning_of_tape": False,
+            }
+        )
+
+    status = get_tape_status(
+        nst_device
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "detected": True,
+            "online": bool(
+                status.get("online")
+            ),
+            "available": bool(
+                status.get("available")
+            ),
+            "drive": drive.get(
+                "description",
+                "Tape Drive",
+            ),
+            "device": nst_device,
+            "density": status.get(
+                "density"
+            ),
+            "write_protected": bool(
+                status.get(
+                    "write_protected"
+                )
+            ),
+            "beginning_of_tape": bool(
+                status.get(
+                    "beginning_of_tape"
+                )
+            ),
+            "error": status.get(
+                "error"
+            ),
+        }
+    )
+
+
+@app.route("/restore")
+def restore_page():
+    initialize_database()
+
+    jobs = list_archive_jobs()
+
+    return render_template(
+        "restore.html",
+        active_page="restore",
+        jobs=jobs,
     )
 
 

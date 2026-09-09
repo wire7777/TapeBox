@@ -1,4 +1,5 @@
 import hashlib
+import time
 import os
 from pathlib import Path
 
@@ -23,17 +24,127 @@ READ_BUFFER_SIZE = 16 * 1024 * 1024
 
 
 
-def _report_progress(progress, message):
+def _report_progress(
+    progress,
+    message,
+    **details,
+):
     """
-    Send an optional progress message to the caller.
+    Send optional restore progress to the caller.
 
-    Core restore code remains UI-agnostic:
-      - CLI may pass print
-      - web/API callers may pass their own callback
-      - callers may omit progress entirely
+    Existing callbacks such as print continue receiving plain text.
+
+    Callbacks that advertise:
+
+        tapebox_structured_progress = True
+
+    receive a dictionary containing the human-readable message plus
+    structured fields used by the web UI.
     """
-    if progress is not None:
-        progress(message)
+
+    if progress is None:
+        return
+
+    if getattr(
+        progress,
+        "tapebox_structured_progress",
+        False,
+    ):
+        event = {
+            "message": message,
+            **details,
+        }
+
+        progress(event)
+        return
+
+    progress(message)
+
+
+def _report_transfer_progress(
+    progress,
+    *,
+    filename,
+    bytes_written,
+    bytes_total,
+    started_at,
+    part_number=None,
+    parts_total=None,
+    base_bytes=0,
+):
+    """
+    Report measured restore throughput.
+
+    bytes_written is the number copied during the current physical
+    file/part operation.
+
+    base_bytes represents bytes already assembled before this
+    operation, which is useful for multi-tape spanned files.
+    """
+
+    now = time.monotonic()
+
+    elapsed = max(
+        now - started_at,
+        0.000001,
+    )
+
+    speed_bps = (
+        bytes_written
+        / elapsed
+    )
+
+    logical_written = (
+        int(base_bytes)
+        + int(bytes_written)
+    )
+
+    logical_total = int(
+        bytes_total
+    )
+
+    remaining = max(
+        logical_total - logical_written,
+        0,
+    )
+
+    eta_seconds = None
+
+    if speed_bps > 0:
+        eta_seconds = (
+            remaining
+            / speed_bps
+        )
+
+    percent = 0.0
+
+    if logical_total > 0:
+        percent = min(
+            100.0,
+            (
+                logical_written
+                / logical_total
+            )
+            * 100.0,
+        )
+
+    _report_progress(
+        progress,
+        f"Restoring {filename}: "
+        f"{logical_written} / "
+        f"{logical_total} bytes",
+        type="transfer",
+        filename=filename,
+        part_number=part_number,
+        parts_total=parts_total,
+        bytes_written=logical_written,
+        bytes_total=logical_total,
+        bytes_this_operation=bytes_written,
+        speed_bps=speed_bps,
+        elapsed_seconds=elapsed,
+        eta_seconds=eta_seconds,
+        percent=percent,
+    )
 
 
 def _validate_spanned_partial(
@@ -153,6 +264,7 @@ def _restore_spanned_from_mounted_tape(
     destination,
     loaded_uuid,
     loaded_name=None,
+    progress=None,
 ):
     """
     Restore the next eligible physical part(s) of one spanned
@@ -514,6 +626,40 @@ def _restore_spanned_from_mounted_tape(
                     digest = hashlib.sha256()
                     copied = 0
 
+                    transfer_started = (
+                        time.monotonic()
+                    )
+
+                    base_bytes = (
+                        part_start_offset
+                    )
+
+                    _report_progress(
+                        progress,
+                        (
+                            f"Restoring "
+                            f"{row['filename']} "
+                            f"part "
+                            f"{part['part_number']} "
+                            f"of {len(parts)}..."
+                        ),
+                        type="transfer_start",
+                        filename=row["filename"],
+                        part_number=part["part_number"],
+                        parts_total=len(parts),
+                        bytes_written=base_bytes,
+                        bytes_total=row["size_bytes"],
+                        percent=(
+                            (
+                                base_bytes
+                                / row["size_bytes"]
+                            )
+                            * 100.0
+                            if row["size_bytes"]
+                            else 0.0
+                        ),
+                    )
+
                     with open(
                         source,
                         "rb",
@@ -536,6 +682,29 @@ def _restore_spanned_from_mounted_tape(
 
                             copied += len(
                                 chunk
+                            )
+
+                            _report_transfer_progress(
+                                progress,
+                                filename=row[
+                                    "filename"
+                                ],
+                                bytes_written=copied,
+                                bytes_total=row[
+                                    "size_bytes"
+                                ],
+                                started_at=(
+                                    transfer_started
+                                ),
+                                part_number=part[
+                                    "part_number"
+                                ],
+                                parts_total=len(
+                                    parts
+                                ),
+                                base_bytes=(
+                                    base_bytes
+                                ),
                             )
 
                     if (
@@ -1111,6 +1280,7 @@ def _restore_spanned_file(
                 final_destination,
                 loaded_uuid,
                 loaded_name,
+                progress=progress,
             )
         )
 
@@ -2101,6 +2271,12 @@ def restore_archive_job(
             ),
         }
 
+    _report_progress(
+        progress,
+        "Tape drive ready.",
+        type="drive_ready",
+    )
+
     RESTORE_MOUNTPOINT.mkdir(
         parents=True,
         exist_ok=True,
@@ -2116,6 +2292,12 @@ def restore_archive_job(
                 f"{RESTORE_MOUNTPOINT}"
             ),
         }
+
+    _report_progress(
+        progress,
+        "Mounting LTFS read-only...",
+        type="mounting",
+    )
 
     mount_result = mount_ltfs(
         sg_device,
@@ -2159,6 +2341,19 @@ def restore_archive_job(
             raise RuntimeError(
                 "Could not read LTFS volume UUID."
             )
+
+        _report_progress(
+            progress,
+            (
+                f"Mounted "
+                f"{loaded_name or loaded_uuid}."
+            ),
+            type="mounted",
+            tape_label=(
+                loaded_name or loaded_uuid
+            ),
+            tape_uuid=loaded_uuid,
+        )
 
         tape_work = _build_archive_tape_work(
             remaining,
@@ -2254,6 +2449,22 @@ def restore_archive_job(
                 digest = hashlib.sha256()
                 copied = 0
 
+                transfer_started = (
+                    time.monotonic()
+                )
+
+                _report_progress(
+                    progress,
+                    f"Restoring {row['filename']}...",
+                    type="transfer_start",
+                    filename=row["filename"],
+                    part_number=None,
+                    parts_total=None,
+                    bytes_written=0,
+                    bytes_total=row["size_bytes"],
+                    percent=0.0,
+                )
+
                 try:
                     with open(
                         source,
@@ -2277,6 +2488,20 @@ def restore_archive_job(
 
                                 copied += len(
                                     chunk
+                                )
+
+                                _report_transfer_progress(
+                                    progress,
+                                    filename=row[
+                                        "filename"
+                                    ],
+                                    bytes_written=copied,
+                                    bytes_total=row[
+                                        "size_bytes"
+                                    ],
+                                    started_at=(
+                                        transfer_started
+                                    ),
                                 )
 
                             dst.flush()
@@ -2383,6 +2608,7 @@ def restore_archive_job(
                         output,
                         loaded_uuid,
                         loaded_name,
+                        progress=progress,
                     )
                 )
 
@@ -2489,6 +2715,12 @@ def restore_archive_job(
         }
 
     finally:
+        _report_progress(
+            progress,
+            "Unmounting LTFS...",
+            type="unmounting",
+        )
+
         unmounted, unmount_error = (
             _unmount_ltfs(
                 RESTORE_MOUNTPOINT
@@ -2516,6 +2748,21 @@ def restore_archive_job(
             # The bulk normal-file restore has finished using this
             # cartridge and LTFS released it cleanly.
             #
+            _report_progress(
+                progress,
+                "LTFS unmounted cleanly.",
+                type="unmounted",
+            )
+
+            _report_progress(
+                progress,
+                (
+                    f"Ejecting "
+                    f"{loaded_name or 'cartridge'}..."
+                ),
+                type="ejecting",
+            )
+
             eject_result = eject_tape()
 
             result["auto_ejected"] = (
@@ -2524,6 +2771,13 @@ def restore_archive_job(
                     False,
                 )
             )
+
+            if eject_result.get("success"):
+                _report_progress(
+                    progress,
+                    "Cartridge ejected.",
+                    type="ejected",
+                )
 
             if not eject_result.get("success"):
                 result["eject_warning"] = (
