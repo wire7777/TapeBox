@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TapeBox runtime data
+catalog.db
+*.db
+*.db-wal
+*.db-shm
+backups/
+manifests/
+state/
+logs/
+
+# Tape / LTFS data
+staging/
+ltfs/
+ltfs-test/
+ltfs-inspect/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
