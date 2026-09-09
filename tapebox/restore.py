@@ -23,6 +23,19 @@ READ_BUFFER_SIZE = 16 * 1024 * 1024
 
 
 
+def _report_progress(progress, message):
+    """
+    Send an optional progress message to the caller.
+
+    Core restore code remains UI-agnostic:
+      - CLI may pass print
+      - web/API callers may pass their own callback
+      - callers may omit progress entirely
+    """
+    if progress is not None:
+        progress(message)
+
+
 def _validate_spanned_partial(
     partial_path,
     parts,
@@ -138,6 +151,7 @@ def _validate_spanned_partial(
 def _restore_spanned_file(
     row,
     destination,
+    progress=None,
 ):
     """
     Restore one logical file whose physical contents span multiple
@@ -439,6 +453,11 @@ def _restore_spanned_file(
                 "Tape drive device mapping is incomplete."
             ),
         }
+
+    _report_progress(
+        progress,
+        "Waiting for tape drive to become ready...",
+    )
 
     status = get_tape_status(
         nst_device
@@ -838,7 +857,11 @@ def _restore_spanned_file(
     return result
 
 
-def restore_file(file_id, destination):
+def restore_file(
+    file_id,
+    destination,
+    progress=None,
+):
     """
     Restore one non-spanned file from LTFS.
 
@@ -863,6 +886,7 @@ def restore_file(file_id, destination):
         return _restore_spanned_file(
             row,
             destination,
+            progress=progress,
         )
 
     expected_uuid = row["ltfs_uuid"]
@@ -972,6 +996,11 @@ def restore_file(file_id, destination):
             "success": False,
             "error": "Tape drive device mapping is incomplete.",
         }
+
+    _report_progress(
+        progress,
+        "Waiting for tape drive to become ready...",
+    )
 
     status = get_tape_status(
         nst_device
@@ -1232,7 +1261,11 @@ def _sha256_file(path):
     return digest.hexdigest(), size
 
 
-def restore_archive_job(job_id, destination):
+def restore_archive_job(
+    job_id,
+    destination,
+    progress=None,
+):
     """
     Restore all possible files from an archive job using the
     currently loaded tape.
@@ -1436,6 +1469,7 @@ def restore_archive_job(job_id, destination):
         span_result = restore_file(
             row["id"],
             output,
+            progress=progress,
         )
 
         after_bytes = before_bytes
@@ -1640,6 +1674,11 @@ def restore_archive_job(job_id, destination):
                 "Tape drive device mapping is incomplete."
             ),
         }
+
+    _report_progress(
+        progress,
+        "Waiting for tape drive to become ready...",
+    )
 
     status = get_tape_status(
         nst_device

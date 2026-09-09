@@ -938,6 +938,8 @@ def _print_archive_result(result):
 
 
 def cmd_archive_add(args):
+    print()
+    print("Checking tape drive... waiting for cartridge if needed.")
     initialize_database()
 
     result = archive_path(
@@ -950,6 +952,8 @@ def cmd_archive_add(args):
 
 
 def cmd_archive_resume(args):
+    print()
+    print("Checking tape drive... waiting for cartridge if needed.")
     initialize_database()
 
     result = resume_archive_job(
@@ -1031,6 +1035,8 @@ def cmd_file_list(args):
 
 
 def cmd_file_verify(args):
+    print()
+    print("Checking tape drive... waiting for cartridge if needed.")
     initialize_database()
 
     result = verify_file(
@@ -1175,6 +1181,7 @@ def cmd_file_restore(args):
     result = restore_file(
         args.file_id,
         args.destination,
+        progress=print,
     )
 
     print()
@@ -1365,6 +1372,7 @@ def cmd_archive_restore(args):
     result = restore_archive_job(
         args.job_id,
         args.destination,
+        progress=print,
     )
 
     print()
