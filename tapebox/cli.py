@@ -7,6 +7,7 @@ from tapebox.archive import (
     resume_archive_job,
 )
 from tapebox.verify import verify_file
+from tapebox.restore import restore_file
 from tapebox.recovery import import_loaded_tape
 
 from tapebox.tape import (
@@ -22,6 +23,7 @@ from tapebox.database import (
     list_tapes,
     reconcile_loaded_tape,
     list_files,
+    search_files,
     list_archive_jobs,
     backup_catalog,
     validate_catalog_database,
@@ -1101,6 +1103,126 @@ def cmd_file_verify(args):
     print()
 
 
+
+def cmd_search(args):
+    """
+    Search archived files and show which tape contains them.
+    """
+
+    query = args.query.strip()
+    rows = search_files(query)
+
+    print()
+    print("TapeBox Search")
+    print("-" * 90)
+    print(f"Query             {query}")
+    print()
+
+    if not rows:
+        print("No matching files found.")
+        print()
+        return
+
+    print(
+        f"{'ID':<6}"
+        f"{'FILE':<32}"
+        f"{'SIZE':<14}"
+        f"{'TAPE':<14}"
+        f"TAPE PATH"
+    )
+
+    print("-" * 90)
+
+    for row in rows:
+        filename = row["filename"]
+
+        if len(filename) > 30:
+            filename = filename[:27] + "..."
+
+        tape_label = (
+            row["tape_label"]
+            if row["tape_label"]
+            else "UNKNOWN"
+        )
+
+        print(
+            f"{row['id']:<6}"
+            f"{filename:<32}"
+            f"{format_bytes(row['size_bytes']):<14}"
+            f"{tape_label:<14}"
+            f"{row['tape_path'] or '-'}"
+        )
+
+    print()
+    print(
+        f"Matches           {len(rows)}"
+    )
+    print()
+
+
+
+def cmd_file_restore(args):
+    """
+    Restore one cataloged file from tape.
+    """
+
+    initialize_database()
+
+    result = restore_file(
+        args.file_id,
+        args.destination,
+    )
+
+    print()
+    print("TapeBox Restore")
+    print("-" * 50)
+
+    if not result.get("success"):
+        print("Status            FAILED")
+
+        if result.get("required_tape"):
+            print(
+                f"Required Tape     "
+                f"{result['required_tape']}"
+            )
+
+        print(
+            f"Error             "
+            f"{result.get('error', 'Unknown error')}"
+        )
+
+        print()
+        return
+
+    print(
+        f"File ID           {result['file_id']}"
+    )
+    print(
+        f"File              {result['filename']}"
+    )
+    print(
+        f"Tape              {result['tape_label']}"
+    )
+    print(
+        f"Tape Path         {result['tape_path']}"
+    )
+    print(
+        f"Destination       {result['destination']}"
+    )
+    print(
+        f"Size              "
+        f"{format_bytes(result['size_bytes'])}"
+    )
+    print(
+        f"SHA256            {result['sha256']}"
+    )
+
+    print()
+    print("Verification      PASSED")
+    print("Status            COMPLETE")
+    print()
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="tapebox",
@@ -1131,6 +1253,28 @@ def build_parser():
 
     init_parser.set_defaults(
         func=cmd_init,
+    )
+
+    #
+    # search
+    #
+
+    search_parser = (
+        subparsers.add_parser(
+            "search",
+            help="Search archived files",
+        )
+    )
+
+    search_parser.add_argument(
+        "query",
+        help=(
+            "Filename or path to search for"
+        ),
+    )
+
+    search_parser.set_defaults(
+        func=cmd_search,
     )
 
     #
@@ -1425,6 +1569,33 @@ def build_parser():
 
     file_verify.set_defaults(
         func=cmd_file_verify,
+    )
+
+
+    file_restore = (
+        file_sub.add_parser(
+            "restore",
+            help=(
+                "Restore a cataloged file from tape"
+            ),
+        )
+    )
+
+    file_restore.add_argument(
+        "file_id",
+        type=int,
+        help="Catalog file ID",
+    )
+
+    file_restore.add_argument(
+        "destination",
+        help=(
+            "Destination file or existing directory"
+        ),
+    )
+
+    file_restore.set_defaults(
+        func=cmd_file_restore,
     )
 
     return parser
