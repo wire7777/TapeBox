@@ -1271,23 +1271,9 @@ def restore_archive_job(job_id, destination):
         }
 
     for row in files:
-        if row["is_spanned"]:
-            return {
-                "success": False,
-                "error": (
-                    "Archive job contains a true spanned file. "
-                    "Spanned-file restore is not implemented yet."
-                ),
-            }
-
-        if not row["ltfs_uuid"]:
-            return {
-                "success": False,
-                "error": (
-                    f"File ID {row['id']} has no LTFS UUID."
-                ),
-            }
-
+        #
+        # Every logical file requires a complete-file SHA256.
+        #
         if not row["checksum_sha256"]:
             return {
                 "success": False,
@@ -1296,13 +1282,29 @@ def restore_archive_job(job_id, destination):
                 ),
             }
 
-        if not row["tape_path"]:
-            return {
-                "success": False,
-                "error": (
-                    f"File ID {row['id']} has no tape path."
-                ),
-            }
+        #
+        # A normal file lives directly on one tape.
+        #
+        # A true spanned file intentionally has no parent
+        # tape_id/tape_path; its physical locations live in
+        # file_parts instead.
+        #
+        if not row["is_spanned"]:
+            if not row["ltfs_uuid"]:
+                return {
+                    "success": False,
+                    "error": (
+                        f"File ID {row['id']} has no LTFS UUID."
+                    ),
+                }
+
+            if not row["tape_path"]:
+                return {
+                    "success": False,
+                    "error": (
+                        f"File ID {row['id']} has no tape path."
+                    ),
+                }
 
     destination = Path(destination)
 
@@ -1379,6 +1381,229 @@ def restore_archive_job(job_id, destination):
             "files_restored_this_run": 0,
             "files_skipped": len(completed_ids),
             "bytes_restored_this_run": 0,
+        }
+
+    #
+    # True spanned files already have a tested, resumable restore
+    # engine in restore_file() / _restore_spanned_file().
+    #
+    # Handle one unfinished spanned logical file per invocation.
+    # That engine:
+    #   - validates the existing partial
+    #   - verifies each physical part
+    #   - resumes at exact part boundaries
+    #   - verifies the complete logical SHA256
+    #   - safely unmounts LTFS
+    #   - auto-ejects the cartridge
+    #
+    # Once all spanned logical files are complete, this function
+    # falls through to the existing bulk normal-file restore path.
+    #
+    spanned_remaining = [
+        row
+        for row in remaining
+        if row["is_spanned"]
+    ]
+
+    if spanned_remaining:
+        row = spanned_remaining[0]
+
+        output = (
+            destination
+            / row["relative_path"]
+        )
+
+        output.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        partial = (
+            output.parent
+            / (
+                ".tapebox-partial-"
+                + output.name
+            )
+        )
+
+        before_bytes = 0
+
+        if partial.exists():
+            before_bytes = (
+                partial.stat().st_size
+            )
+
+        span_result = restore_file(
+            row["id"],
+            output,
+        )
+
+        after_bytes = before_bytes
+
+        if output.exists():
+            after_bytes = (
+                output.stat().st_size
+            )
+
+        elif partial.exists():
+            after_bytes = (
+                partial.stat().st_size
+            )
+
+        bytes_this_run = max(
+            0,
+            after_bytes - before_bytes,
+        )
+
+        if not span_result.get("success"):
+            required = []
+
+            required_tape = (
+                span_result.get(
+                    "required_tape"
+                )
+            )
+
+            if required_tape:
+                required.append(
+                    required_tape
+                )
+
+            return {
+                "success": False,
+                "wrong_tape": span_result.get(
+                    "wrong_tape",
+                    False,
+                ),
+                "job_id": job_id,
+                "source_path": job["source_path"],
+                "destination": str(destination),
+                "loaded_tape": span_result.get(
+                    "loaded_tape"
+                ),
+                "required_tapes": required,
+                "auto_ejected": span_result.get(
+                    "auto_ejected",
+                    False,
+                ),
+                "eject_warning": span_result.get(
+                    "eject_warning"
+                ),
+                "error": span_result.get(
+                    "error",
+                    "Spanned restore failed.",
+                ),
+            }
+
+        span_complete = span_result.get(
+            "completed",
+            True,
+        )
+
+        files_completed = len(
+            completed_ids
+        )
+
+        files_restored_this_run = 0
+
+        if span_complete:
+            files_completed += 1
+            files_restored_this_run = 1
+
+        required_tapes = []
+
+        if not span_complete:
+            required_tape = (
+                span_result.get(
+                    "required_tape"
+                )
+            )
+
+            if required_tape:
+                required_tapes.append(
+                    required_tape
+                )
+
+        else:
+            #
+            # The spanned file just completed. Determine whether
+            # other unfinished spanned files or normal files remain.
+            #
+            remaining_after = [
+                item
+                for item in remaining
+                if item["id"] != row["id"]
+            ]
+
+            if remaining_after:
+                next_row = remaining_after[0]
+
+                if next_row["is_spanned"]:
+                    next_parts = get_file_parts(
+                        next_row["id"]
+                    )
+
+                    if next_parts:
+                        label = (
+                            next_parts[0][
+                                "tape_label"
+                            ]
+                            or next_parts[0][
+                                "ltfs_uuid"
+                            ]
+                        )
+
+                        if label:
+                            required_tapes.append(
+                                label
+                            )
+
+                else:
+                    label = (
+                        next_row["tape_label"]
+                        or next_row["ltfs_uuid"]
+                    )
+
+                    if label:
+                        required_tapes.append(
+                            label
+                        )
+
+        all_complete = (
+            files_completed
+            == len(files)
+        )
+
+        return {
+            "success": True,
+            "completed": all_complete,
+            "job_id": job_id,
+            "source_path": job["source_path"],
+            "destination": str(destination),
+            "loaded_tape": span_result.get(
+                "loaded_tape"
+            ),
+            "files_total": len(files),
+            "files_completed": files_completed,
+            "files_restored_this_run": (
+                files_restored_this_run
+            ),
+            "files_skipped": len(
+                completed_ids
+            ),
+            "bytes_restored_this_run": (
+                bytes_this_run
+            ),
+            "required_tapes": (
+                required_tapes
+            ),
+            "auto_ejected": span_result.get(
+                "auto_ejected",
+                False,
+            ),
+            "eject_warning": span_result.get(
+                "eject_warning"
+            ),
         }
 
     drives = discover_drives()
@@ -1734,6 +1959,35 @@ def restore_archive_job(job_id, destination):
                     "LTFS unmount failed after restore: "
                     f"{unmount_error}"
                 ),
+                "auto_ejected": False,
             }
+
+        elif (
+            result
+            and (
+                result.get("success")
+                or result.get("wrong_tape")
+            )
+        ):
+            #
+            # The bulk normal-file restore has finished using this
+            # cartridge and LTFS released it cleanly.
+            #
+            eject_result = eject_tape()
+
+            result["auto_ejected"] = (
+                eject_result.get(
+                    "success",
+                    False,
+                )
+            )
+
+            if not eject_result.get("success"):
+                result["eject_warning"] = (
+                    eject_result.get(
+                        "error",
+                        "Tape eject failed.",
+                    )
+                )
 
     return result
