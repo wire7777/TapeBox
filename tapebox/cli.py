@@ -3,6 +3,7 @@ import re
 import sqlite3
 
 from tapebox.archive import archive_file
+from tapebox.verify import verify_file
 
 from tapebox.tape import (
     discover_drives,
@@ -683,6 +684,84 @@ def cmd_file_list(args):
     print()
 
 
+
+def cmd_file_verify(args):
+    initialize_database()
+
+    result = verify_file(
+        args.file_id
+    )
+
+    print()
+    print("TapeBox File Verification")
+    print("-" * 50)
+
+    if not result.get("success"):
+        print("Status          FAILED")
+        print(
+            f"Error           "
+            f"{result.get('error', 'Unknown error')}"
+        )
+        print()
+        return
+
+    print(
+        f"{'File ID':<16}"
+        f"{result['file_id']}"
+    )
+
+    print(
+        f"{'File':<16}"
+        f"{result['filename']}"
+    )
+
+    print(
+        f"{'Tape':<16}"
+        f"{result['tape_label']}"
+    )
+
+    print(
+        f"{'Tape Path':<16}"
+        f"{result['tape_path']}"
+    )
+
+    print(
+        f"{'Size':<16}"
+        f"{format_bytes(result['actual_size'])}"
+    )
+
+    print()
+
+    if result["verified"]:
+        print("Status          VERIFIED")
+    else:
+        print("Status          MISMATCH")
+
+    print(
+        f"{'Size Match':<16}"
+        f"{'YES' if result['size_match'] else 'NO'}"
+    )
+
+    print(
+        f"{'SHA256 Match':<16}"
+        f"{'YES' if result['checksum_match'] else 'NO'}"
+    )
+
+    print()
+
+    print(
+        f"{'Expected':<16}"
+        f"{result['expected_checksum']}"
+    )
+
+    print(
+        f"{'Actual':<16}"
+        f"{result['actual_checksum']}"
+    )
+
+    print()
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="tapebox",
@@ -883,6 +962,23 @@ def build_parser():
 
     file_list.set_defaults(
         func=cmd_file_list,
+    )
+
+    file_verify = (
+        file_sub.add_parser(
+            "verify",
+            help="Verify archived file against tape",
+        )
+    )
+
+    file_verify.add_argument(
+        "file_id",
+        type=int,
+        help="Archived file database ID",
+    )
+
+    file_verify.set_defaults(
+        func=cmd_file_verify,
     )
 
     return parser

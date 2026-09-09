@@ -506,3 +506,54 @@ def list_files():
             ORDER BY files.id
             """
         ).fetchall()
+
+
+def get_file_by_id(file_id):
+    """
+    Return one archived file with its tape information.
+    """
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                files.id,
+                files.archive_job_id,
+                files.original_path,
+                files.relative_path,
+                files.filename,
+                files.size_bytes,
+                files.checksum_sha256,
+                files.tape_id,
+                files.tape_path,
+                files.is_spanned,
+                files.archived_at,
+                files.verified_at,
+                tapes.label AS tape_label,
+                tapes.ltfs_uuid
+            FROM files
+            LEFT JOIN tapes
+                ON tapes.id = files.tape_id
+            WHERE files.id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+
+
+def mark_file_verified(file_id):
+    """
+    Record successful read-back verification time.
+    """
+
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE files
+            SET verified_at = ?
+            WHERE id = ?
+            """,
+            (
+                utc_now(),
+                file_id,
+            ),
+        )
