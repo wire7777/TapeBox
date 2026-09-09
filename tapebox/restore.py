@@ -601,84 +601,118 @@ def _restore_spanned_file(
             ) as dst:
 
                 for part in parts_this_tape:
-                    source = (
-                        RESTORE_MOUNTPOINT
-                        / part[
-                            "tape_path"
-                        ].lstrip("/")
-                    )
-
-                    if not source.exists():
-                        raise FileNotFoundError(
-                            "Tape part is missing: "
-                            f"{part['tape_path']}"
-                        )
-
-                    if not source.is_file():
-                        raise RuntimeError(
-                            "Tape part path is not a "
-                            "regular file: "
-                            f"{part['tape_path']}"
-                        )
-
-                    digest = hashlib.sha256()
-                    copied = 0
-
-                    with open(
-                        source,
-                        "rb",
-                    ) as src:
-                        while True:
-                            chunk = src.read(
-                                READ_BUFFER_SIZE
-                            )
-
-                            if not chunk:
-                                break
-
-                            dst.write(
-                                chunk
-                            )
-
-                            digest.update(
-                                chunk
-                            )
-
-                            copied += len(
-                                chunk
-                            )
-
-                    if (
-                        copied
-                        != part["size_bytes"]
-                    ):
-                        raise RuntimeError(
-                            "Restored tape-part size "
-                            "mismatch for part "
-                            f"{part['part_number']}."
-                        )
-
-                    if (
-                        digest.hexdigest()
-                        != part[
-                            "checksum_sha256"
-                        ]
-                    ):
-                        raise RuntimeError(
-                            "Restored tape-part SHA256 "
-                            "mismatch for part "
-                            f"{part['part_number']}."
-                        )
-
                     #
-                    # Commit every completed part to disk before
-                    # moving to the next part.
+                    # Remember the exact boundary of the last
+                    # completely verified part.
                     #
-                    dst.flush()
+                    # If anything fails while reading, writing, or
+                    # verifying this part, roll the partial file back
+                    # to this boundary so the next restore invocation
+                    # can resume safely.
+                    #
+                    part_start_offset = dst.tell()
 
-                    os.fsync(
-                        dst.fileno()
-                    )
+                    try:
+                        source = (
+                            RESTORE_MOUNTPOINT
+                            / part[
+                                "tape_path"
+                            ].lstrip("/")
+                        )
+
+                        if not source.exists():
+                            raise FileNotFoundError(
+                                "Tape part is missing: "
+                                f"{part['tape_path']}"
+                            )
+
+                        if not source.is_file():
+                            raise RuntimeError(
+                                "Tape part path is not a "
+                                "regular file: "
+                                f"{part['tape_path']}"
+                            )
+
+                        digest = hashlib.sha256()
+                        copied = 0
+
+                        with open(
+                            source,
+                            "rb",
+                        ) as src:
+                            while True:
+                                chunk = src.read(
+                                    READ_BUFFER_SIZE
+                                )
+
+                                if not chunk:
+                                    break
+
+                                dst.write(
+                                    chunk
+                                )
+
+                                digest.update(
+                                    chunk
+                                )
+
+                                copied += len(
+                                    chunk
+                                )
+
+                        if (
+                            copied
+                            != part["size_bytes"]
+                        ):
+                            raise RuntimeError(
+                                "Restored tape-part size "
+                                "mismatch for part "
+                                f"{part['part_number']}."
+                            )
+
+                        if (
+                            digest.hexdigest()
+                            != part[
+                                "checksum_sha256"
+                            ]
+                        ):
+                            raise RuntimeError(
+                                "Restored tape-part SHA256 "
+                                "mismatch for part "
+                                f"{part['part_number']}."
+                            )
+
+                        #
+                        # Commit every completed and verified part
+                        # before moving to the next part.
+                        #
+                        dst.flush()
+
+                        os.fsync(
+                            dst.fileno()
+                        )
+
+                    except Exception:
+                        #
+                        # Never preserve an incomplete or failed part.
+                        # Return the partial file to the last verified
+                        # part boundary and make that rollback durable.
+                        #
+                        dst.seek(
+                            part_start_offset
+                        )
+
+                        dst.truncate(
+                            part_start_offset
+                        )
+
+                        dst.flush()
+
+                        os.fsync(
+                            dst.fileno()
+                        )
+
+                        raise
 
             completed_parts += len(
                 parts_this_tape
