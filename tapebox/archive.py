@@ -16,6 +16,7 @@ from tapebox.tape import (
     discover_drives,
     get_ltfs_virtual_attribute,
     get_tape_status,
+    mount_ltfs,
     run_command,
     _is_mounted,
     _unmount_ltfs,
@@ -150,13 +151,9 @@ def archive_file(source_path):
     # against the TapeBox catalog.
     #
 
-    mount_result = run_command(
-        [
-            "ltfs",
-            str(ARCHIVE_MOUNTPOINT),
-            "-o",
-            f"devname={sg_device}",
-        ],
+    mount_result = mount_ltfs(
+        sg_device,
+        ARCHIVE_MOUNTPOINT,
         timeout=120,
     )
 
@@ -500,13 +497,9 @@ def archive_folder(source_path):
             ),
         }
 
-    mount_result = run_command(
-        [
-            "ltfs",
-            str(ARCHIVE_MOUNTPOINT),
-            "-o",
-            f"devname={sg_device}",
-        ],
+    mount_result = mount_ltfs(
+        sg_device,
+        ARCHIVE_MOUNTPOINT,
         timeout=120,
     )
 
@@ -1077,13 +1070,9 @@ def archive_folder_job(source_path, job_id=None):
             ),
         }
 
-    mount_result = run_command(
-        [
-            "ltfs",
-            str(ARCHIVE_MOUNTPOINT),
-            "-o",
-            f"devname={sg_device}",
-        ],
+    mount_result = mount_ltfs(
+        sg_device,
+        ARCHIVE_MOUNTPOINT,
         timeout=120,
     )
 

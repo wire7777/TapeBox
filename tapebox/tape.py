@@ -1,6 +1,7 @@
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -47,6 +48,87 @@ def run_command(command, timeout=120):
             "stdout": "",
             "stderr": str(exc),
         }
+
+
+def _is_transient_tape_error(text):
+    """
+    Return True for short-lived tape-device errors worth retrying.
+    """
+    text = (text or "").lower()
+
+    markers = (
+        "device or resource busy",
+        "resource temporarily unavailable",
+        "input/output error",
+        "failed to open /dev/sg",
+        "failed backend open call",
+        "(16)",
+    )
+
+    return any(
+        marker in text
+        for marker in markers
+    )
+
+
+def mount_ltfs(
+    sg_device,
+    mount_path,
+    read_only=False,
+    retries=5,
+    retry_delay=1.5,
+    timeout=120,
+):
+    """
+    Mount LTFS with a small retry window for transient device-busy
+    conditions that can occur just after a previous LTFS operation.
+    """
+    mount_path = Path(mount_path)
+
+    command = [
+        "ltfs",
+        str(mount_path),
+        "-o",
+        f"devname={sg_device}",
+    ]
+
+    if read_only:
+        command.extend(
+            [
+                "-o",
+                "ro",
+            ]
+        )
+
+    last_result = {
+        "returncode": -1,
+        "stdout": "",
+        "stderr": "LTFS mount failed.",
+    }
+
+    for attempt in range(1, retries + 1):
+        last_result = run_command(
+            command,
+            timeout=timeout,
+        )
+
+        if _is_mounted(mount_path):
+            return last_result
+
+        text = (
+            last_result.get("stdout", "")
+            + "\n"
+            + last_result.get("stderr", "")
+        )
+
+        if not _is_transient_tape_error(text):
+            return last_result
+
+        if attempt < retries:
+            time.sleep(retry_delay)
+
+    return last_result
+
 
 
 def get_ltfs_devices():
@@ -223,9 +305,16 @@ def discover_drives():
     return drives
 
 
-def get_tape_status(device="/dev/nst0"):
+def get_tape_status(
+    device="/dev/nst0",
+    retries=5,
+    retry_delay=1.0,
+):
     """
     Read tape status using mt.
+
+    Short-lived EBUSY/I/O errors are retried because some drives
+    briefly remain unavailable after LTFS mount/unmount activity.
     """
     if not Path(device).exists():
         return {
@@ -234,15 +323,33 @@ def get_tape_status(device="/dev/nst0"):
             "error": "Device does not exist",
         }
 
-    result = run_command(
-        [
-            "mt",
-            "-f",
-            device,
-            "status",
-        ],
-        timeout=15,
-    )
+    result = None
+
+    for attempt in range(1, retries + 1):
+        result = run_command(
+            [
+                "mt",
+                "-f",
+                device,
+                "status",
+            ],
+            timeout=15,
+        )
+
+        if result["returncode"] == 0:
+            break
+
+        text = (
+            result.get("stdout", "")
+            + "\n"
+            + result.get("stderr", "")
+        )
+
+        if not _is_transient_tape_error(text):
+            break
+
+        if attempt < retries:
+            time.sleep(retry_delay)
 
     status = {
         "device": device,
@@ -274,7 +381,6 @@ def get_tape_status(device="/dev/nst0"):
     status["end_of_tape"] = "EOT" in text
 
     return status
-
 
 def _is_mounted(mount_path):
     """
@@ -415,15 +521,10 @@ def inspect_ltfs(
         )
         return info
 
-    mount_result = run_command(
-        [
-            "ltfs",
-            str(mount_path),
-            "-o",
-            f"devname={sg_device}",
-            "-o",
-            "ro",
-        ],
+    mount_result = mount_ltfs(
+        sg_device,
+        mount_path,
+        read_only=True,
         timeout=120,
     )
 
