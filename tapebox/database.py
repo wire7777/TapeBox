@@ -129,6 +129,12 @@ def initialize_database():
                     ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_files_filename
             ON files(filename);
 
@@ -143,6 +149,111 @@ def initialize_database():
             """
         )
 
+
+
+DEFAULT_SETTINGS = {
+    "restore_directory": "/mnt/tapebox/restored",
+    "staging_directory": "/mnt/tapebox/staging",
+}
+
+
+def get_setting(key, default=None):
+    """
+    Return one TapeBox setting.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT value
+            FROM settings
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+
+    if row is None:
+        return default
+
+    return row["value"]
+
+
+def set_setting(key, value):
+    """
+    Create or update one TapeBox setting.
+    """
+
+    key = str(key).strip()
+    value = str(value).strip()
+
+    if not key:
+        raise ValueError("Setting key cannot be empty")
+
+    with connect() as db:
+        db.execute(
+            """
+            INSERT INTO settings (
+                key,
+                value,
+                updated_at
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (
+                key,
+                value,
+                utc_now(),
+            ),
+        )
+
+
+def get_settings():
+    """
+    Return TapeBox settings with defaults applied.
+    """
+
+    settings = dict(DEFAULT_SETTINGS)
+
+    with connect() as db:
+        rows = db.execute(
+            """
+            SELECT key, value
+            FROM settings
+            """
+        ).fetchall()
+
+    for row in rows:
+        settings[row["key"]] = row["value"]
+
+    return settings
+
+
+def initialize_default_settings():
+    """
+    Insert default settings when they do not already exist.
+    """
+
+    with connect() as db:
+        for key, value in DEFAULT_SETTINGS.items():
+            db.execute(
+                """
+                INSERT OR IGNORE INTO settings (
+                    key,
+                    value,
+                    updated_at
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    key,
+                    value,
+                    utc_now(),
+                ),
+            )
 
 def add_tape(label):
     """

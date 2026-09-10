@@ -1,0 +1,944 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Settings</h1>
+        <p>
+            Configure TapeBox storage paths and system options.
+        </p>
+    </div>
+</div>
+
+{% if message %}
+<div class="panel" style="margin-bottom: 20px;">
+    <strong>{{ message }}</strong>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="panel" style="margin-bottom: 20px;">
+    <strong>{{ error }}</strong>
+</div>
+{% endif %}
+
+<div class="panel">
+
+    <h2>Storage</h2>
+
+    <form method="post" action="{{ url_for('settings_page') }}">
+
+        <div style="margin-bottom: 22px;">
+            <label
+                for="restore_directory"
+                style="
+                    display: block;
+                    margin-bottom: 8px;
+                    font-weight: 600;
+                "
+            >
+                Restore Directory
+            </label>
+
+            <div
+                style="
+                    display: flex;
+                    gap: 8px;
+                    max-width: 840px;
+                "
+            >
+                <input
+                    id="restore_directory"
+                    name="restore_directory"
+                    type="text"
+                    value="{{ settings.restore_directory }}"
+                    style="
+                        flex: 1;
+                        min-width: 0;
+                        box-sizing: border-box;
+                        padding: 10px 12px;
+                        font: inherit;
+                    "
+                >
+
+                <button
+                    type="button"
+                    class="action-button folder-browse-button"
+                    data-target="restore_directory"
+                    style="
+                        min-width: 90px;
+                    "
+                >
+                    Browse ▼
+                </button>
+            </div>
+
+            <div style="margin-top: 7px; opacity: 0.72;">
+                Files restored or copied from tape are placed here.
+            </div>
+        </div>
+
+        <div style="margin-bottom: 22px;">
+            <label
+                for="staging_directory"
+                style="
+                    display: block;
+                    margin-bottom: 8px;
+                    font-weight: 600;
+                "
+            >
+                Buffer / Staging Directory
+            </label>
+
+            <div
+                style="
+                    display: flex;
+                    gap: 8px;
+                    max-width: 840px;
+                "
+            >
+                <input
+                    id="staging_directory"
+                    name="staging_directory"
+                    type="text"
+                    value="{{ settings.staging_directory }}"
+                    style="
+                        flex: 1;
+                        min-width: 0;
+                        box-sizing: border-box;
+                        padding: 10px 12px;
+                        font: inherit;
+                    "
+                >
+
+                <button
+                    type="button"
+                    class="action-button folder-browse-button"
+                    data-target="staging_directory"
+                    style="
+                        min-width: 90px;
+                    "
+                >
+                    Browse ▼
+                </button>
+            </div>
+
+            <div style="margin-top: 7px; opacity: 0.72;">
+                SSD/NVMe staging area used before writing large archives to tape.
+            </div>
+        </div>
+
+        <button
+            type="submit"
+            class="action-button"
+        >
+            Save Settings
+        </button>
+
+    </form>
+
+</div>
+
+<div class="panel" style="margin-top: 20px;">
+
+    <h2>Tape Drive</h2>
+
+    <div
+        id="drive-status-panel"
+        style="
+            display: grid;
+            gap: 10px;
+            max-width: 760px;
+            margin-bottom: 18px;
+        "
+    >
+        <div>
+            <span
+                id="drive-status-dot"
+                style="
+                    display: inline-block;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 50%;
+                    background: #777;
+                    margin-right: 8px;
+                "
+            ></span>
+
+            <strong id="drive-status-text">
+                Checking...
+            </strong>
+        </div>
+
+        <div>
+            <strong>Drive:</strong>
+            <span id="drive-description">-</span>
+        </div>
+
+        <div>
+            <strong>SCSI Address:</strong>
+            <span id="drive-scsi-address">-</span>
+        </div>
+
+        <div>
+            <strong>Tape Device:</strong>
+            <span id="drive-nst-device">-</span>
+        </div>
+
+        <div>
+            <strong>Generic Device:</strong>
+            <span id="drive-sg-device">-</span>
+        </div>
+    </div>
+
+    <button
+        type="button"
+        id="rescan-scsi-button"
+        class="action-button"
+    >
+        Rescan SCSI Bus
+    </button>
+
+    <div
+        id="rescan-scsi-message"
+        style="
+            margin-top: 12px;
+            opacity: 0.85;
+        "
+    ></div>
+
+</div>
+
+
+<div class="panel" style="margin-top: 20px;">
+
+    <h2>Database</h2>
+
+    <div style="margin-bottom: 18px;">
+        <div>
+            <strong>Catalog:</strong>
+            <span id="database-catalog-path">
+                /var/lib/tapebox/catalog.db
+            </span>
+        </div>
+
+        <div style="margin-top: 8px;">
+            <strong>Latest Backup:</strong>
+            <span id="database-latest-backup">
+                Checking...
+            </span>
+        </div>
+    </div>
+
+    <div
+        style="
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 22px;
+        "
+    >
+        <button
+            type="button"
+            id="database-backup-button"
+            class="action-button"
+        >
+            Backup Database
+        </button>
+
+        <a
+            id="database-download-button"
+            class="action-button"
+            href="/settings/database/download-latest"
+            style="
+                text-decoration: none;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            "
+        >
+            Download Latest Backup
+        </a>
+    </div>
+
+    <hr style="
+        border: 0;
+        border-top: 1px solid rgba(255,255,255,0.12);
+        margin: 22px 0;
+    ">
+
+    <h3>Restore Database</h3>
+
+    <p style="opacity: 0.75;">
+        Upload a TapeBox database backup.
+        TapeBox will validate it and create a safety backup
+        of the current database before restoring.
+    </p>
+
+    <div
+        style="
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        "
+    >
+        <input
+            id="database-restore-file"
+            type="file"
+            accept=".db,.sqlite,.sqlite3"
+        >
+
+        <button
+            type="button"
+            id="database-restore-button"
+            class="action-button"
+        >
+            Restore Database
+        </button>
+    </div>
+
+    <div
+        id="database-message"
+        style="
+            margin-top: 14px;
+            opacity: 0.9;
+        "
+    ></div>
+
+</div>
+
+
+<div
+    id="folder-picker"
+    style="
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.68);
+        z-index: 9999;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        box-sizing: border-box;
+    "
+>
+    <div
+        class="panel"
+        style="
+            width: min(720px, 100%);
+            max-height: 80vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        "
+    >
+        <div
+            style="
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 14px;
+            "
+        >
+            <h2 style="margin: 0;">
+                Select Folder
+            </h2>
+
+            <button
+                type="button"
+                id="folder-picker-close"
+                class="action-button"
+                style="min-width: 80px;"
+            >
+                Close
+            </button>
+        </div>
+
+        <div
+            id="folder-picker-path"
+            style="
+                margin-bottom: 12px;
+                font-family: monospace;
+                opacity: 0.85;
+                word-break: break-all;
+            "
+        >
+            /
+        </div>
+
+        <div
+            style="
+                display: flex;
+                gap: 8px;
+                margin-bottom: 12px;
+            "
+        >
+            <button
+                type="button"
+                id="folder-picker-up"
+                class="action-button"
+            >
+                Up One Level
+            </button>
+
+            <button
+                type="button"
+                id="folder-picker-select"
+                class="action-button"
+            >
+                Select This Folder
+            </button>
+        </div>
+
+        <div
+            id="folder-picker-error"
+            style="
+                display: none;
+                margin-bottom: 12px;
+            "
+        ></div>
+
+        <div
+            id="folder-picker-list"
+            style="
+                overflow-y: auto;
+                border-top: 1px solid rgba(255,255,255,0.12);
+            "
+        ></div>
+    </div>
+</div>
+
+{% endblock %}
+
+
+{% block scripts %}
+
+<script>
+(() => {
+    const catalogPath =
+        document.getElementById("database-catalog-path");
+
+    const latestBackup =
+        document.getElementById("database-latest-backup");
+
+    const backupButton =
+        document.getElementById("database-backup-button");
+
+    const downloadButton =
+        document.getElementById("database-download-button");
+
+    const restoreFile =
+        document.getElementById("database-restore-file");
+
+    const restoreButton =
+        document.getElementById("database-restore-button");
+
+    const databaseMessage =
+        document.getElementById("database-message");
+
+
+    function formatBytes(bytes) {
+        const value = Number(bytes || 0);
+
+        if (value < 1024) {
+            return value + " B";
+        }
+
+        if (value < 1024 * 1024) {
+            return (
+                (value / 1024).toFixed(2)
+                + " KB"
+            );
+        }
+
+        return (
+            (value / (1024 * 1024)).toFixed(2)
+            + " MB"
+        );
+    }
+
+
+    async function refreshDatabaseStatus() {
+        try {
+            const response = await fetch(
+                "/api/settings/database/status"
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.error ||
+                    "Could not read database status."
+                );
+            }
+
+            catalogPath.textContent =
+                data.catalog.path;
+
+            if (data.latest_backup) {
+                latestBackup.textContent =
+                    data.latest_backup.name
+                    + " · "
+                    + formatBytes(
+                        data.latest_backup.size_bytes
+                    );
+
+                downloadButton.style.display =
+                    "inline-flex";
+
+            } else {
+                latestBackup.textContent =
+                    "No backups yet.";
+
+                downloadButton.style.display =
+                    "none";
+            }
+
+        } catch (error) {
+            latestBackup.textContent =
+                "Status unavailable";
+        }
+    }
+
+
+    backupButton.addEventListener(
+        "click",
+        async () => {
+            backupButton.disabled = true;
+
+            databaseMessage.textContent =
+                "Creating database backup...";
+
+            try {
+                const response = await fetch(
+                    "/api/settings/database/backup",
+                    {
+                        method: "POST",
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(
+                        data.error ||
+                        "Database backup failed."
+                    );
+                }
+
+                databaseMessage.textContent =
+                    "Backup complete: "
+                    + data.backup.name;
+
+                await refreshDatabaseStatus();
+
+            } catch (error) {
+                databaseMessage.textContent =
+                    error.message;
+
+            } finally {
+                backupButton.disabled = false;
+            }
+        }
+    );
+
+
+    restoreButton.addEventListener(
+        "click",
+        async () => {
+            if (
+                !restoreFile.files ||
+                restoreFile.files.length === 0
+            ) {
+                databaseMessage.textContent =
+                    "Choose a database backup first.";
+                return;
+            }
+
+            const confirmed = window.confirm(
+                "Restore this TapeBox database backup?\n\n"
+                + "A safety backup of the current database "
+                + "will be created first."
+            );
+
+            if (!confirmed) {
+                return;
+            }
+
+            restoreButton.disabled = true;
+            backupButton.disabled = true;
+
+            databaseMessage.textContent =
+                "Validating and restoring database...";
+
+            const formData = new FormData();
+
+            formData.append(
+                "backup",
+                restoreFile.files[0]
+            );
+
+            try {
+                const response = await fetch(
+                    "/api/settings/database/restore",
+                    {
+                        method: "POST",
+                        body: formData,
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(
+                        data.error ||
+                        "Database restore failed."
+                    );
+                }
+
+                databaseMessage.textContent =
+                    "Database restored successfully. "
+                    + data.tapes
+                    + " tapes and "
+                    + data.files
+                    + " files found.";
+
+                restoreFile.value = "";
+
+                await refreshDatabaseStatus();
+
+            } catch (error) {
+                databaseMessage.textContent =
+                    error.message;
+
+            } finally {
+                restoreButton.disabled = false;
+                backupButton.disabled = false;
+            }
+        }
+    );
+
+
+    refreshDatabaseStatus();
+})();
+
+
+(() => {
+    const driveStatusDot =
+        document.getElementById("drive-status-dot");
+
+    const driveStatusText =
+        document.getElementById("drive-status-text");
+
+    const driveDescription =
+        document.getElementById("drive-description");
+
+    const driveScsiAddress =
+        document.getElementById("drive-scsi-address");
+
+    const driveNstDevice =
+        document.getElementById("drive-nst-device");
+
+    const driveSgDevice =
+        document.getElementById("drive-sg-device");
+
+    const rescanButton =
+        document.getElementById("rescan-scsi-button");
+
+    const rescanMessage =
+        document.getElementById("rescan-scsi-message");
+
+
+    function renderDriveStatus(data) {
+        if (
+            data.success &&
+            data.online &&
+            data.drive
+        ) {
+            driveStatusDot.style.background = "#35c759";
+            driveStatusText.textContent = "ONLINE";
+
+            driveDescription.textContent =
+                data.drive.description || "-";
+
+            driveScsiAddress.textContent =
+                data.drive.scsi_address || "-";
+
+            driveNstDevice.textContent =
+                data.drive.nst_device || "-";
+
+            driveSgDevice.textContent =
+                data.drive.sg_device || "-";
+
+            return;
+        }
+
+        driveStatusDot.style.background = "#ff453a";
+        driveStatusText.textContent = "OFFLINE";
+
+        driveDescription.textContent = "-";
+        driveScsiAddress.textContent = "-";
+        driveNstDevice.textContent = "-";
+        driveSgDevice.textContent = "-";
+    }
+
+
+    async function refreshDriveStatus() {
+        try {
+            const response = await fetch(
+                "/api/settings/drive-status"
+            );
+
+            const data = await response.json();
+
+            renderDriveStatus(data);
+
+        } catch (error) {
+            renderDriveStatus(
+                {
+                    success: false,
+                    online: false,
+                }
+            );
+        }
+    }
+
+
+    rescanButton.addEventListener(
+        "click",
+        async () => {
+            rescanButton.disabled = true;
+            rescanMessage.textContent =
+                "Scanning SCSI bus...";
+
+            try {
+                const response = await fetch(
+                    "/api/settings/rescan-scsi",
+                    {
+                        method: "POST",
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(
+                        data.error ||
+                        "SCSI rescan failed."
+                    );
+                }
+
+                const count =
+                    Number(data.drive_count || 0);
+
+                rescanMessage.textContent =
+                    "SCSI scan complete — " +
+                    count +
+                    " tape drive" +
+                    (count === 1 ? "" : "s") +
+                    " detected.";
+
+                await refreshDriveStatus();
+
+            } catch (error) {
+                rescanMessage.textContent =
+                    error.message;
+
+                await refreshDriveStatus();
+
+            } finally {
+                rescanButton.disabled = false;
+            }
+        }
+    );
+
+
+    refreshDriveStatus();
+})();
+
+
+(() => {
+    const picker = document.getElementById("folder-picker");
+    const pickerPath = document.getElementById("folder-picker-path");
+    const pickerList = document.getElementById("folder-picker-list");
+    const pickerError = document.getElementById("folder-picker-error");
+    const pickerClose = document.getElementById("folder-picker-close");
+    const pickerUp = document.getElementById("folder-picker-up");
+    const pickerSelect = document.getElementById("folder-picker-select");
+
+    let activeTarget = null;
+    let currentPath = "";
+    let currentParent = null;
+
+    function showError(message) {
+        pickerError.textContent = message;
+        pickerError.style.display = "block";
+    }
+
+    function clearError() {
+        pickerError.textContent = "";
+        pickerError.style.display = "none";
+    }
+
+    function closePicker() {
+        picker.style.display = "none";
+        activeTarget = null;
+    }
+
+    function renderDirectories(data) {
+        pickerList.innerHTML = "";
+
+        currentPath = data.path || "";
+        currentParent = data.parent;
+
+        pickerPath.textContent = currentPath || "Storage Roots";
+
+        pickerUp.disabled = currentParent === null;
+
+        pickerSelect.disabled = !currentPath;
+
+        if (!data.directories || data.directories.length === 0) {
+            const empty = document.createElement("div");
+
+            empty.textContent = "No subdirectories.";
+            empty.style.padding = "16px 8px";
+            empty.style.opacity = "0.65";
+
+            pickerList.appendChild(empty);
+            return;
+        }
+
+        for (const directory of data.directories) {
+            const row = document.createElement("button");
+
+            row.type = "button";
+            row.textContent = "📁  " + directory.name;
+
+            row.style.width = "100%";
+            row.style.display = "block";
+            row.style.textAlign = "left";
+            row.style.padding = "12px 10px";
+            row.style.border = "0";
+            row.style.borderBottom =
+                "1px solid rgba(255,255,255,0.08)";
+            row.style.background = "transparent";
+            row.style.color = "inherit";
+            row.style.font = "inherit";
+            row.style.cursor = "pointer";
+
+            row.addEventListener("click", () => {
+                loadDirectory(directory.path);
+            });
+
+            pickerList.appendChild(row);
+        }
+    }
+
+    async function loadDirectory(path = "") {
+        clearError();
+
+        pickerList.innerHTML = `
+            <div style="padding: 16px 8px; opacity: 0.65;">
+                Loading...
+            </div>
+        `;
+
+        try {
+            const response = await fetch(
+                "/api/settings/directories?path=" +
+                encodeURIComponent(path)
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.error || "Could not browse directory."
+                );
+            }
+
+            renderDirectories(data);
+
+        } catch (error) {
+            pickerList.innerHTML = "";
+            showError(error.message);
+        }
+    }
+
+    document.querySelectorAll(
+        ".folder-browse-button"
+    ).forEach((button) => {
+        button.addEventListener("click", () => {
+            const targetId = button.dataset.target;
+            const input = document.getElementById(targetId);
+
+            activeTarget = input;
+
+            picker.style.display = "flex";
+
+            let startPath = input.value.trim();
+
+            if (!startPath.startsWith("/")) {
+                startPath = "";
+            }
+
+            loadDirectory(startPath);
+        });
+    });
+
+    pickerClose.addEventListener(
+        "click",
+        closePicker
+    );
+
+    pickerUp.addEventListener(
+        "click",
+        () => {
+            if (currentParent === null) {
+                return;
+            }
+
+            loadDirectory(currentParent || "");
+        }
+    );
+
+    pickerSelect.addEventListener(
+        "click",
+        () => {
+            if (!activeTarget || !currentPath) {
+                return;
+            }
+
+            activeTarget.value = currentPath;
+            closePicker();
+        }
+    );
+
+    picker.addEventListener(
+        "click",
+        (event) => {
+            if (event.target === picker) {
+                closePicker();
+            }
+        }
+    );
+
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (
+                event.key === "Escape" &&
+                picker.style.display === "flex"
+            ) {
+                closePicker();
+            }
+        }
+    );
+})();
+</script>
+
+{% endblock %}

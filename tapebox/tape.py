@@ -848,3 +848,303 @@ def eject_tape(
         "success": True,
         "device": device,
     }
+
+
+def mount_ltfs_inspector(
+    sg_device="/dev/sg0",
+    mountpoint="/mnt/tapebox/ltfs-inspect",
+):
+    """
+    Mount an LTFS cartridge read-only for interactive inspection.
+
+    Unlike inspect_ltfs(), this intentionally leaves the
+    filesystem mounted so the web UI can browse it.
+    """
+    mount_path = Path(mountpoint)
+
+    info = {
+        "success": False,
+        "mounted": False,
+        "label": None,
+        "uuid": None,
+        "volume_serial": None,
+        "capacity_bytes": None,
+        "used_bytes": None,
+        "free_bytes": None,
+        "items": [],
+        "error": None,
+    }
+
+    if not sg_device:
+        info["error"] = "No SCSI generic device."
+        return info
+
+    if not Path(sg_device).exists():
+        info["error"] = (
+            f"Device does not exist: {sg_device}"
+        )
+        return info
+
+    try:
+        mount_path.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+    except OSError as exc:
+        info["error"] = str(exc)
+        return info
+
+    #
+    # Reuse an Inspector mount if it already exists.
+    #
+    if not _is_mounted(mount_path):
+        mount_result = mount_ltfs(
+            sg_device,
+            mount_path,
+            read_only=True,
+            timeout=120,
+        )
+
+        if not _is_mounted(mount_path):
+            info["error"] = (
+                mount_result.get("stderr")
+                or mount_result.get("stdout")
+                or "LTFS mount failed."
+            )
+            return info
+
+    info["mounted"] = True
+
+    #
+    # Read LTFS identity directly from the mounted volume.
+    #
+    info["uuid"] = get_ltfs_virtual_attribute(
+        mount_path,
+        "ltfs.volumeUUID",
+    )
+
+    info["label"] = get_ltfs_virtual_attribute(
+        mount_path,
+        "ltfs.volumeName",
+    )
+
+    info["volume_serial"] = get_ltfs_virtual_attribute(
+        mount_path,
+        "ltfs.volumeSerial",
+    )
+
+    #
+    # Capacity.
+    #
+    try:
+        usage = shutil.disk_usage(
+            mount_path
+        )
+
+        info["capacity_bytes"] = usage.total
+        info["used_bytes"] = usage.used
+        info["free_bytes"] = usage.free
+
+    except OSError as exc:
+        info["error"] = (
+            f"Could not read LTFS capacity: {exc}"
+        )
+        return info
+
+    #
+    # Root directory only.
+    #
+    try:
+        items = []
+
+        for entry in mount_path.iterdir():
+            try:
+                stat = entry.stat()
+
+                is_directory = entry.is_dir()
+
+                items.append(
+                    {
+                        "name": entry.name,
+                        "type": (
+                            "directory"
+                            if is_directory
+                            else "file"
+                        ),
+                        "size": (
+                            None
+                            if is_directory
+                            else stat.st_size
+                        ),
+                    }
+                )
+
+            except OSError as exc:
+                items.append(
+                    {
+                        "name": entry.name,
+                        "type": "unknown",
+                        "size": None,
+                        "error": str(exc),
+                    }
+                )
+
+        items.sort(
+            key=lambda item: (
+                item["type"] != "directory",
+                item["name"].casefold(),
+            )
+        )
+
+        info["items"] = items
+
+    except OSError as exc:
+        info["error"] = (
+            f"Could not read LTFS root directory: {exc}"
+        )
+        return info
+
+    info["success"] = True
+
+    return info
+
+
+def browse_ltfs_inspector(
+    relative_path="",
+    mountpoint="/mnt/tapebox/ltfs-inspect",
+):
+    """
+    Browse one directory on the currently mounted
+    read-only Inspector LTFS filesystem.
+
+    The requested path is strictly confined to the
+    Inspector mount root.
+    """
+    mount_path = Path(mountpoint)
+
+    result = {
+        "success": False,
+        "mounted": False,
+        "path": "",
+        "parent": None,
+        "items": [],
+        "error": None,
+    }
+
+    if not _is_mounted(mount_path):
+        result["error"] = (
+            "No LTFS cartridge is mounted in Tape Inspector."
+        )
+        return result
+
+    result["mounted"] = True
+
+    try:
+        root = mount_path.resolve()
+
+        requested = (
+            root / str(relative_path).lstrip("/")
+        ).resolve()
+
+    except (OSError, RuntimeError) as exc:
+        result["error"] = (
+            f"Could not resolve requested path: {exc}"
+        )
+        return result
+
+    #
+    # SECURITY:
+    # The resolved path must remain underneath the
+    # Inspector LTFS mount.
+    #
+    try:
+        relative = requested.relative_to(root)
+    except ValueError:
+        result["error"] = (
+            "Requested path is outside the LTFS cartridge."
+        )
+        return result
+
+    if not requested.exists():
+        result["error"] = "Path does not exist."
+        return result
+
+    if not requested.is_dir():
+        result["error"] = "Requested path is not a directory."
+        return result
+
+    relative_text = (
+        ""
+        if str(relative) == "."
+        else relative.as_posix()
+    )
+
+    result["path"] = relative_text
+
+    if relative_text:
+        parent = relative.parent
+
+        result["parent"] = (
+            ""
+            if str(parent) == "."
+            else parent.as_posix()
+        )
+
+    try:
+        items = []
+
+        for entry in requested.iterdir():
+            try:
+                stat = entry.stat()
+                is_directory = entry.is_dir()
+
+                child_relative = (
+                    entry.resolve()
+                    .relative_to(root)
+                    .as_posix()
+                )
+
+                items.append(
+                    {
+                        "name": entry.name,
+                        "path": child_relative,
+                        "type": (
+                            "directory"
+                            if is_directory
+                            else "file"
+                        ),
+                        "size": (
+                            None
+                            if is_directory
+                            else stat.st_size
+                        ),
+                    }
+                )
+
+            except (OSError, ValueError) as exc:
+                items.append(
+                    {
+                        "name": entry.name,
+                        "path": None,
+                        "type": "unknown",
+                        "size": None,
+                        "error": str(exc),
+                    }
+                )
+
+        items.sort(
+            key=lambda item: (
+                item["type"] != "directory",
+                item["name"].casefold(),
+            )
+        )
+
+        result["items"] = items
+        result["success"] = True
+
+    except OSError as exc:
+        result["error"] = (
+            f"Could not read LTFS directory: {exc}"
+        )
+
+    return result

@@ -1,0 +1,1809 @@
+{% extends "base.html" %}
+
+{% block title %}
+Tape Inspector - TapeBox
+{% endblock %}
+
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Tape Inspector</h1>
+        <p>
+            Inspect and browse any loaded LTFS cartridge
+            without modifying the tape.
+        </p>
+    </div>
+</div>
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+        <div>
+            <h2 id="loaded-tape-heading">
+                No Tape Loaded
+            </h2>
+            <p id="loaded-tape-description">
+                Insert an LTFS cartridge to inspect its contents.
+            </p>
+        </div>
+    </div>
+
+    <div
+        id="inspector-drive-status"
+        class="tape-drive-status offline"
+    >
+        <div
+            class="tape-drive-status-main"
+            style="
+                display: flex;
+                align-items: center;
+                gap: 18px;
+                flex-wrap: wrap;
+            "
+        >
+            <div
+                style="
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                "
+            >
+                <span class="tape-drive-dot"></span>
+
+                <strong id="inspector-drive-state">
+                    CHECKING DRIVE
+                </strong>
+            </div>
+
+            <div
+                id="inspector-activity"
+                style="
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                "
+            >
+                <span
+                    id="inspector-activity-dot"
+                    style="
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 50%;
+                        background: #4ade80;
+                        display: inline-block;
+                    "
+                ></span>
+
+                <strong
+                    id="inspector-activity-text"
+                    style="font-size: 0.92em;"
+                >
+                    DRIVE READY
+                </strong>
+            </div>
+        </div>
+
+        <div
+            id="inspector-drive-detail"
+            class="tape-drive-detail"
+        >
+            Checking tape drive status...
+        </div>
+    </div>
+
+
+    <div style="margin-top: 18px;">
+        <button
+            id="inspect-tape-button"
+            class="action-button"
+            type="button"
+            disabled
+        >
+            Inspect Loaded Tape
+        </button>
+
+        <button
+            id="eject-tape-button"
+            class="action-button"
+            type="button"
+            hidden
+        >
+            Unmount & Eject
+        </button>
+    </div>
+
+    <div
+        id="inspector-message"
+        style="margin-top: 16px;"
+        hidden
+    ></div>
+
+    <div
+        id="copy-progress-panel"
+        style="
+            margin-top: 18px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255,255,255,0.10);
+        "
+        hidden
+    >
+        <div
+            style="
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                margin-bottom: 10px;
+            "
+        >
+            <strong id="copy-progress-title">
+                Copy Progress
+            </strong>
+
+            <span id="copy-progress-percent">
+                0%
+            </span>
+        </div>
+
+        <div
+            style="
+                width: 100%;
+                height: 10px;
+                background: rgba(255,255,255,0.10);
+                overflow: hidden;
+            "
+        >
+            <div
+                id="copy-progress-bar"
+                style="
+                    width: 0%;
+                    height: 100%;
+                    background: #2f80ed;
+                "
+            ></div>
+        </div>
+
+        <div
+            id="copy-progress-file"
+            style="
+                margin-top: 12px;
+                word-break: break-all;
+            "
+        >
+            -
+        </div>
+
+        <div
+            style="
+                display: grid;
+                grid-template-columns:
+                    repeat(auto-fit, minmax(150px, 1fr));
+                gap: 12px;
+                margin-top: 12px;
+            "
+        >
+            <div>
+                <strong>Files</strong>
+                <div id="copy-progress-files">0 / 0</div>
+            </div>
+
+            <div>
+                <strong>Transferred</strong>
+                <div id="copy-progress-bytes">0 B</div>
+            </div>
+
+            <div>
+                <strong>Speed</strong>
+                <div id="copy-progress-speed">-</div>
+            </div>
+
+            <div>
+                <strong>Elapsed</strong>
+                <div id="copy-progress-elapsed">-</div>
+            </div>
+
+            <div>
+                <strong>ETA</strong>
+                <div id="copy-progress-eta">-</div>
+            </div>
+        </div>
+    </div>
+
+</section>
+
+
+<section
+    id="inspector-results"
+    class="card section-gap"
+    hidden
+>
+
+    <div class="card-header">
+        <div>
+            <h2 id="inspector-label">
+                Tape Contents
+            </h2>
+
+            <p>
+                Read-only LTFS browser
+            </p>
+        </div>
+    </div>
+
+
+    <div
+        style="
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        "
+    >
+
+        <div>
+            <strong>Label</strong>
+            <div id="info-label">-</div>
+        </div>
+
+        <div>
+            <strong>UUID</strong>
+            <div id="info-uuid">-</div>
+        </div>
+
+        <div>
+            <strong>Media</strong>
+            <div id="info-density">-</div>
+        </div>
+
+        <div>
+            <strong>Drive</strong>
+            <div id="info-drive">-</div>
+        </div>
+
+    </div>
+
+
+    <div
+        style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        "
+    >
+        <button
+            id="browser-up-button"
+            class="action-button"
+            type="button"
+            hidden
+        >
+            ↑ Up One Level
+        </button>
+
+        <button
+            id="select-all-button"
+            class="action-button"
+            type="button"
+        >
+            Select All
+        </button>
+
+        <button
+            id="clear-all-button"
+            class="action-button"
+            type="button"
+            disabled
+        >
+            Clear All
+        </button>
+
+        <button
+            id="copy-selected-button"
+            class="action-button"
+            type="button"
+            disabled
+        >
+            Copy Selected
+        </button>
+
+        <div
+            id="selection-summary"
+            style="
+                font-size: 0.92em;
+                white-space: nowrap;
+                opacity: 0.85;
+            "
+        >
+            0 items selected · 0 B
+        </div>
+
+        <div>
+            <strong>Location:</strong>
+            <span id="browser-path">/</span>
+        </div>
+    </div>
+
+    <div
+        style="
+            overflow-x: auto;
+        "
+    >
+        <table
+            style="
+                width: 100%;
+                border-collapse: collapse;
+            "
+        >
+            <thead>
+                <tr>
+                    <th
+                        style="
+                            width: 52px;
+                            text-align: center;
+                            padding: 10px;
+                        "
+                    >
+                        Select
+                    </th>
+
+                    <th
+                        style="
+                            text-align: left;
+                            padding: 10px;
+                        "
+                    >
+                        Name
+                    </th>
+
+                    <th
+                        style="
+                            text-align: left;
+                            padding: 10px;
+                        "
+                    >
+                        Type
+                    </th>
+
+                    <th
+                        style="
+                            text-align: right;
+                            padding: 10px;
+                        "
+                    >
+                        Size
+                    </th>
+                </tr>
+            </thead>
+
+            <tbody id="inspector-file-list">
+            </tbody>
+        </table>
+    </div>
+
+</section>
+
+{% endblock %}
+
+
+{% block scripts %}
+
+<script>
+(() => {
+    const statusPanel = document.getElementById(
+        "inspector-drive-status"
+    );
+
+    const statusState = document.getElementById(
+        "inspector-drive-state"
+    );
+
+    const statusDetail = document.getElementById(
+        "inspector-drive-detail"
+    );
+
+    const activityDot =
+        document.getElementById(
+            "inspector-activity-dot"
+        );
+
+    const activityText =
+        document.getElementById(
+            "inspector-activity-text"
+        );
+
+    const inspectButton = document.getElementById(
+        "inspect-tape-button"
+    );
+
+    const loadedTapeHeading = document.getElementById(
+        "loaded-tape-heading"
+    );
+
+    const loadedTapeDescription = document.getElementById(
+        "loaded-tape-description"
+    );
+
+    const ejectButton = document.getElementById(
+        "eject-tape-button"
+    );
+
+    const messageBox = document.getElementById(
+        "inspector-message"
+    );
+
+    const resultsPanel = document.getElementById(
+        "inspector-results"
+    );
+
+    const fileList = document.getElementById(
+        "inspector-file-list"
+    );
+
+    const infoLabel = document.getElementById(
+        "info-label"
+    );
+
+    const infoUuid = document.getElementById(
+        "info-uuid"
+    );
+
+    const infoDensity = document.getElementById(
+        "info-density"
+    );
+
+    const infoDrive = document.getElementById(
+        "info-drive"
+    );
+
+    const inspectorLabel = document.getElementById(
+        "inspector-label"
+    );
+
+    const browserUpButton = document.getElementById(
+        "browser-up-button"
+    );
+
+    const browserPath = document.getElementById(
+        "browser-path"
+    );
+
+    const copySelectedButton =
+        document.getElementById(
+            "copy-selected-button"
+        );
+
+    const selectAllButton =
+        document.getElementById(
+            "select-all-button"
+        );
+
+    const clearAllButton =
+        document.getElementById(
+            "clear-all-button"
+        );
+
+    const copyProgressPanel =
+        document.getElementById(
+            "copy-progress-panel"
+        );
+
+    const copyProgressTitle =
+        document.getElementById(
+            "copy-progress-title"
+        );
+
+    const copyProgressPercent =
+        document.getElementById(
+            "copy-progress-percent"
+        );
+
+    const copyProgressBar =
+        document.getElementById(
+            "copy-progress-bar"
+        );
+
+    const copyProgressFile =
+        document.getElementById(
+            "copy-progress-file"
+        );
+
+    const copyProgressFiles =
+        document.getElementById(
+            "copy-progress-files"
+        );
+
+    const copyProgressBytes =
+        document.getElementById(
+            "copy-progress-bytes"
+        );
+
+    const copyProgressSpeed =
+        document.getElementById(
+            "copy-progress-speed"
+        );
+
+    const copyProgressElapsed =
+        document.getElementById(
+            "copy-progress-elapsed"
+        );
+
+    const copyProgressEta =
+        document.getElementById(
+            "copy-progress-eta"
+        );
+
+
+    let currentPath = "";
+    let currentParent = null;
+    let currentItems = [];
+
+    let driveReady = false;
+    let tapeMounted = false;
+    let operationRunning = false;
+
+    const selectedPaths = new Set();
+
+    const selectedItems = new Map();
+
+    const selectionSummary =
+        document.getElementById(
+            "selection-summary"
+        );
+
+
+    function updateSelectionSummary() {
+        let knownBytes = 0;
+        let fileCount = 0;
+        let folderCount = 0;
+
+        for (
+            const item
+            of selectedItems.values()
+        ) {
+            if (item.type === "directory") {
+                folderCount++;
+                continue;
+            }
+
+            fileCount++;
+
+            if (
+                item.size !== null
+                && item.size !== undefined
+            ) {
+                knownBytes += Number(
+                    item.size
+                );
+            }
+        }
+
+        const itemCount =
+            selectedPaths.size;
+
+        if (itemCount === 0) {
+            selectionSummary.textContent =
+                "0 items selected · 0 B";
+
+            return;
+        }
+
+        let text =
+            itemCount
+            + (
+                itemCount === 1
+                ? " item selected"
+                : " items selected"
+            );
+
+        if (fileCount > 0) {
+            text +=
+                " · "
+                + formatBytes(knownBytes);
+        }
+
+        if (folderCount > 0) {
+            text +=
+                " + "
+                + folderCount
+                + (
+                    folderCount === 1
+                    ? " folder"
+                    : " folders"
+                );
+        }
+
+        selectionSummary.textContent =
+            text;
+    }
+
+
+    function updateButtons() {
+        inspectButton.disabled = (
+            !driveReady
+            || tapeMounted
+            || operationRunning
+        );
+
+        ejectButton.disabled = (
+            !tapeMounted
+            || operationRunning
+        );
+
+        copySelectedButton.disabled = (
+            !tapeMounted
+            || operationRunning
+            || selectedPaths.size === 0
+        );
+
+        selectAllButton.disabled = (
+            !tapeMounted
+            || operationRunning
+            || currentItems.length === 0
+        );
+
+        clearAllButton.disabled = (
+            operationRunning
+            || selectedPaths.size === 0
+        );
+    }
+
+
+    function showMessage(text, isError = false) {
+        messageBox.hidden = false;
+        messageBox.textContent = text;
+
+        messageBox.style.color = (
+            isError
+            ? "#ff6b6b"
+            : ""
+        );
+    }
+
+
+    function clearMessage() {
+        messageBox.hidden = true;
+        messageBox.textContent = "";
+    }
+
+
+    function formatBytes(bytes) {
+        if (
+            bytes === null
+            || bytes === undefined
+        ) {
+            return "-";
+        }
+
+        if (bytes === 0) {
+            return "0 B";
+        }
+
+        const units = [
+            "B",
+            "KB",
+            "MB",
+            "GB",
+            "TB",
+        ];
+
+        let value = Number(bytes);
+        let unit = 0;
+
+        while (
+            value >= 1000
+            && unit < units.length - 1
+        ) {
+            value /= 1000;
+            unit++;
+        }
+
+        return (
+            value.toFixed(
+                unit === 0 ? 0 : 2
+            )
+            + " "
+            + units[unit]
+        );
+    }
+
+
+    function formatDuration(seconds) {
+        if (
+            seconds === null
+            || seconds === undefined
+            || !Number.isFinite(
+                Number(seconds)
+            )
+        ) {
+            return "-";
+        }
+
+        seconds = Math.max(
+            0,
+            Math.round(Number(seconds))
+        );
+
+        const hours = Math.floor(
+            seconds / 3600
+        );
+
+        const minutes = Math.floor(
+            (seconds % 3600) / 60
+        );
+
+        const secs = seconds % 60;
+
+        if (hours > 0) {
+            return (
+                hours
+                + "h "
+                + minutes
+                + "m "
+                + secs
+                + "s"
+            );
+        }
+
+        if (minutes > 0) {
+            return (
+                minutes
+                + "m "
+                + secs
+                + "s"
+            );
+        }
+
+        return secs + "s";
+    }
+
+
+    function renderCopyProgress(operation) {
+        copyProgressPanel.hidden = false;
+
+        const transfer =
+            operation.transfer || {};
+
+        const copied = Number(
+            transfer.bytes_copied || 0
+        );
+
+        const total = Number(
+            transfer.total_bytes || 0
+        );
+
+        const percent = (
+            total > 0
+            ? Math.min(
+                100,
+                (copied / total) * 100
+            )
+            : (
+                operation.status === "completed"
+                ? 100
+                : 0
+            )
+        );
+
+        copyProgressPercent.textContent =
+            percent.toFixed(1) + "%";
+
+        copyProgressBar.style.width =
+            percent + "%";
+
+        copyProgressFile.textContent =
+            transfer.current_file
+            || operation.message
+            || "-";
+
+        copyProgressFiles.textContent =
+            Number(
+                transfer.files_completed || 0
+            )
+            + " / "
+            + Number(
+                transfer.total_files || 0
+            );
+
+        copyProgressBytes.textContent =
+            formatBytes(copied)
+            + " / "
+            + formatBytes(total);
+
+        const speed = Number(
+            transfer.speed_bps || 0
+        );
+
+        copyProgressSpeed.textContent =
+            speed > 0
+            ? formatBytes(speed) + "/s"
+            : "-";
+
+        copyProgressElapsed.textContent =
+            formatDuration(
+                transfer.elapsed_seconds
+            );
+
+        copyProgressEta.textContent =
+            operation.status === "completed"
+            ? "0s"
+            : formatDuration(
+                transfer.eta_seconds
+            );
+
+        copyProgressTitle.textContent = (
+            operation.status === "completed"
+            ? "Copy Complete"
+            : operation.status === "failed"
+            ? "Copy Failed"
+            : "Copy Progress"
+        );
+    }
+
+
+    async function pollCopyOperation(
+        operationId
+    ) {
+        while (true) {
+            const response = await fetch(
+                "/api/operations/"
+                + encodeURIComponent(
+                    operationId
+                )
+            );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+                || !data.operation
+            ) {
+                throw new Error(
+                    data.error
+                    || "Could not read copy status."
+                );
+            }
+
+            const operation =
+                data.operation;
+
+            renderCopyProgress(
+                operation
+            );
+
+            if (
+                operation.status
+                === "completed"
+            ) {
+                return operation;
+            }
+
+            if (
+                operation.status
+                === "failed"
+            ) {
+                throw new Error(
+                    operation.message
+                    || "Copy failed."
+                );
+            }
+
+            await new Promise(
+                resolve =>
+                    setTimeout(resolve, 750)
+            );
+        }
+    }
+
+
+    function renderTape(data) {
+        tapeMounted = true;
+
+        loadedTapeHeading.textContent =
+            data.label || "Tape Mounted";
+
+        loadedTapeDescription.textContent =
+            (data.label || "LTFS cartridge")
+            + " is mounted read-only.";
+
+        resultsPanel.hidden = false;
+        ejectButton.hidden = false;
+
+        infoLabel.textContent =
+            data.label || "(No LTFS label)";
+
+        infoUuid.textContent =
+            data.uuid || "-";
+
+        infoDensity.textContent =
+            data.density || "-";
+
+        infoDrive.textContent =
+            data.drive || "-";
+
+        inspectorLabel.textContent =
+            data.label
+            ? data.label + " Contents"
+            : "Tape Contents";
+
+        renderDirectory({
+            path: "",
+            parent: null,
+            items: data.items,
+        });
+
+        updateButtons();
+    }
+
+
+    function renderDirectory(data) {
+        currentPath = data.path || "";
+
+        currentParent = (
+            data.parent === undefined
+            ? null
+            : data.parent
+        );
+
+        browserPath.textContent =
+            "/"
+            + (
+                currentPath
+                ? currentPath + "/"
+                : ""
+            );
+
+        browserUpButton.hidden = (
+            !currentPath
+        );
+
+        fileList.innerHTML = "";
+
+        const items = Array.isArray(
+            data.items
+        )
+            ? data.items
+            : [];
+
+        if (!items.length) {
+            const row = document.createElement(
+                "tr"
+            );
+
+            const cell = document.createElement(
+                "td"
+            );
+
+            cell.colSpan = 4;
+            cell.textContent =
+                "This folder is empty.";
+
+            cell.style.padding = "12px";
+
+            row.appendChild(cell);
+            fileList.appendChild(row);
+            return;
+        }
+
+        for (const item of items) {
+            const row = document.createElement(
+                "tr"
+            );
+
+            const selectCell =
+                document.createElement("td");
+
+            const nameCell =
+                document.createElement("td");
+
+            const typeCell =
+                document.createElement("td");
+
+            const sizeCell =
+                document.createElement("td");
+
+            selectCell.style.padding = "10px";
+            selectCell.style.textAlign = "center";
+
+            nameCell.style.padding = "10px";
+            typeCell.style.padding = "10px";
+            sizeCell.style.padding = "10px";
+            sizeCell.style.textAlign = "right";
+
+            const checkbox =
+                document.createElement("input");
+
+            checkbox.type = "checkbox";
+            checkbox.checked = (
+                selectedPaths.has(item.path)
+            );
+
+            if (checkbox.checked) {
+                selectedItems.set(
+                    item.path,
+                    {
+                        type: item.type,
+                        size: item.size,
+                    }
+                );
+            }
+
+            checkbox.addEventListener(
+                "change",
+                () => {
+                    if (checkbox.checked) {
+                        selectedPaths.add(
+                            item.path
+                        );
+
+                        selectedItems.set(
+                            item.path,
+                            {
+                                type: item.type,
+                                size: item.size,
+                            }
+                        );
+                    } else {
+                        selectedPaths.delete(
+                            item.path
+                        );
+
+                        selectedItems.delete(
+                            item.path
+                        );
+                    }
+
+                    updateSelectionSummary();
+                    updateButtons();
+                }
+            );
+
+            selectCell.appendChild(
+                checkbox
+            );
+
+            if (
+                item.type === "directory"
+                && item.path
+            ) {
+                const link =
+                    document.createElement(
+                        "button"
+                    );
+
+                link.type = "button";
+                link.textContent =
+                    "📁 " + item.name;
+
+                link.style.background = "none";
+                link.style.border = "none";
+                link.style.padding = "0";
+                link.style.cursor = "pointer";
+                link.style.color = "inherit";
+                link.style.font = "inherit";
+
+                link.addEventListener(
+                    "click",
+                    () => browseDirectory(
+                        item.path
+                    )
+                );
+
+                nameCell.appendChild(link);
+
+            } else {
+                nameCell.textContent =
+                    (
+                        item.type === "directory"
+                        ? "📁 "
+                        : "📄 "
+                    )
+                    + item.name;
+            }
+
+            typeCell.textContent =
+                item.type || "-";
+
+            sizeCell.textContent =
+                item.type === "directory"
+                ? "-"
+                : formatBytes(item.size);
+
+            row.appendChild(selectCell);
+            row.appendChild(nameCell);
+            row.appendChild(typeCell);
+            row.appendChild(sizeCell);
+
+            fileList.appendChild(row);
+        }
+    }
+
+
+    function setDriveActivity(
+        state,
+        text
+    ) {
+        activityText.textContent = text;
+
+        if (state === "reading") {
+            activityDot.style.background =
+                "#3b82f6";
+
+            activityDot.style.boxShadow =
+                "0 0 10px rgba(59,130,246,0.85)";
+
+            return;
+        }
+
+        if (state === "seeking") {
+            activityDot.style.background =
+                "#f59e0b";
+
+            activityDot.style.boxShadow =
+                "0 0 10px rgba(245,158,11,0.85)";
+
+            return;
+        }
+
+        if (state === "error") {
+            activityDot.style.background =
+                "#ef4444";
+
+            activityDot.style.boxShadow =
+                "0 0 10px rgba(239,68,68,0.85)";
+
+            return;
+        }
+
+        activityDot.style.background =
+            "#4ade80";
+
+        activityDot.style.boxShadow =
+            "none";
+    }
+
+
+    async function browseDirectory(path) {
+        if (operationRunning) {
+            return;
+        }
+
+        clearMessage();
+
+        setDriveActivity(
+            "seeking",
+            "DRIVE SEEKING"
+        );
+
+        try {
+            const params = new URLSearchParams({
+                path: path || "",
+            });
+
+            const response = await fetch(
+                "/api/inspector/browse?"
+                + params.toString(),
+                {
+                    cache: "no-store",
+                }
+            );
+
+            setDriveActivity(
+                "reading",
+                "DRIVE READING"
+            );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Could not browse folder."
+                );
+            }
+
+            renderDirectory(data);
+
+            setDriveActivity(
+                "ready",
+                "DRIVE READY"
+            );
+
+        } catch (error) {
+            setDriveActivity(
+                "error",
+                "DRIVE ERROR"
+            );
+
+            showMessage(
+                error.message,
+                true
+            );
+        }
+    }
+
+
+    async function inspectTape() {
+        operationRunning = true;
+        clearMessage();
+        updateButtons();
+
+        //
+        // LTFS temporarily owns the drive while mounting.
+        // Keep the UI in a healthy BUSY state instead of
+        // flashing TAPE OFFLINE during that transition.
+        //
+        statusPanel.classList.remove(
+            "offline"
+        );
+
+        statusPanel.classList.add(
+            "online"
+        );
+
+        statusState.textContent =
+            "MOUNTING TAPE";
+
+        statusDetail.textContent =
+            "Opening LTFS read-only...";
+
+        showMessage(
+            "Mounting LTFS read-only..."
+        );
+
+        try {
+            const response = await fetch(
+                "/api/inspector/mount",
+                {
+                    method: "POST",
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Tape inspection failed."
+                );
+            }
+
+            renderTape(data);
+
+            showMessage(
+                "Tape mounted read-only."
+            );
+
+        } catch (error) {
+            showMessage(
+                error.message,
+                true
+            );
+
+        } finally {
+            operationRunning = false;
+            updateButtons();
+        }
+    }
+
+
+    async function ejectTape() {
+        operationRunning = true;
+        updateButtons();
+
+        showMessage(
+            "Unmounting LTFS..."
+        );
+
+        try {
+            const response = await fetch(
+                "/api/inspector/eject",
+                {
+                    method: "POST",
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Tape eject failed."
+                );
+            }
+
+            tapeMounted = false;
+
+            resultsPanel.hidden = true;
+            ejectButton.hidden = true;
+
+            fileList.innerHTML = "";
+
+            showMessage(
+                "LTFS unmounted cleanly and cartridge ejected."
+            );
+
+        } catch (error) {
+            showMessage(
+                error.message,
+                true
+            );
+
+        } finally {
+            operationRunning = false;
+            updateButtons();
+        }
+    }
+
+
+    async function loadMountedInspector() {
+        try {
+            const params = new URLSearchParams({
+                path: currentPath || "",
+            });
+
+            const response = await fetch(
+                "/api/inspector/browse?"
+                + params.toString(),
+                {
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Could not load mounted tape."
+                );
+            }
+
+            resultsPanel.hidden = false;
+            ejectButton.hidden = false;
+
+            loadedTapeHeading.textContent =
+                data.label || "Tape Mounted";
+
+            loadedTapeDescription.textContent =
+                (data.label || "LTFS cartridge")
+                + " is mounted read-only.";
+
+            infoLabel.textContent =
+                data.label || "(No LTFS label)";
+
+            infoUuid.textContent =
+                data.uuid || "-";
+
+            infoDensity.textContent =
+                data.density || "-";
+
+            infoDrive.textContent =
+                data.drive || "-";
+
+            inspectorLabel.textContent =
+                data.label
+                ? data.label + " Contents"
+                : "Tape Contents";
+
+            renderDirectory(data);
+
+            return true;
+
+        } catch (error) {
+            showMessage(
+                error.message,
+                true
+            );
+
+            return false;
+        }
+    }
+
+
+    async function pollTapeStatus() {
+        if (operationRunning) {
+            window.setTimeout(
+                pollTapeStatus,
+                1000
+            );
+
+            return;
+        }
+
+        try {
+            const response = await fetch(
+                "/api/tape/status",
+                {
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            driveReady = Boolean(
+                data.online
+                && data.available
+            );
+
+            const wasMounted = tapeMounted;
+
+            tapeMounted = Boolean(
+                data.mounted
+            );
+
+            statusPanel.classList.toggle(
+                "online",
+                driveReady
+            );
+
+            statusPanel.classList.toggle(
+                "offline",
+                !driveReady
+            );
+
+            if (tapeMounted) {
+                //
+                // A mounted LTFS filesystem is authoritative.
+                // Rebuild the Inspector after a page refresh.
+                //
+                driveReady = true;
+
+                statusPanel.classList.add(
+                    "online"
+                );
+
+                statusPanel.classList.remove(
+                    "offline"
+                );
+
+                statusState.textContent =
+                    "TAPE MOUNTED";
+
+                statusDetail.textContent =
+                    (data.drive || "Tape Drive")
+                    + " · "
+                    + (data.density || "Ready")
+                    + " · READ ONLY";
+
+                ejectButton.hidden = false;
+
+                //
+                // Only reload the directory when necessary.
+                // Do not reset somebody browsing a subfolder
+                // every two seconds.
+                //
+                if (
+                    !wasMounted
+                    || resultsPanel.hidden
+                ) {
+                    loadedTapeHeading.textContent =
+                        "Tape Mounted";
+
+                    loadedTapeDescription.textContent =
+                        "Loading mounted LTFS cartridge...";
+
+                    await loadMountedInspector();
+
+                }
+
+            } else if (driveReady) {
+                resultsPanel.hidden = true;
+                ejectButton.hidden = true;
+
+                currentPath = "";
+                currentParent = null;
+
+                loadedTapeHeading.textContent =
+                    "Tape Ready";
+
+                loadedTapeDescription.textContent =
+                    "A cartridge is loaded and ready to inspect.";
+
+                statusState.textContent =
+                    "TAPE ONLINE";
+
+                statusDetail.textContent =
+                    (data.drive || "Tape Drive")
+                    + " · "
+                    + (data.density || "Ready");
+
+            } else {
+                resultsPanel.hidden = true;
+                ejectButton.hidden = true;
+
+                currentPath = "";
+                currentParent = null;
+
+                statusState.textContent =
+                    data.detected
+                    ? "NO TAPE LOADED"
+                    : "NO DRIVE";
+
+                loadedTapeHeading.textContent =
+                    data.detected
+                    ? "No Tape Loaded"
+                    : "No Tape Drive";
+
+                loadedTapeDescription.textContent =
+                    data.detected
+                    ? "Insert an LTFS cartridge to inspect its contents."
+                    : "No compatible tape drive was detected.";
+
+                statusDetail.textContent =
+                    data.detected
+                    ? "Insert cartridge and wait for the drive to become ready."
+                    : "No tape drive detected.";
+            }
+
+            updateButtons();
+
+        } catch (error) {
+            driveReady = false;
+
+            statusPanel.classList.remove(
+                "online"
+            );
+
+            statusPanel.classList.add(
+                "offline"
+            );
+
+            statusState.textContent =
+                "STATUS ERROR";
+
+            statusDetail.textContent =
+                error.message;
+
+            updateButtons();
+        }
+
+        window.setTimeout(
+            pollTapeStatus,
+            2000
+        );
+    }
+
+
+    selectAllButton.addEventListener(
+        "click",
+        () => {
+            if (
+                operationRunning
+                || !tapeMounted
+            ) {
+                return;
+            }
+
+            for (const item of currentItems) {
+                if (!item.path) {
+                    continue;
+                }
+
+                selectedPaths.add(
+                    item.path
+                );
+
+                selectedItems.set(
+                    item.path,
+                    {
+                        type: item.type,
+                        size: item.size,
+                    }
+                );
+            }
+
+            updateSelectionSummary();
+            updateButtons();
+
+            renderDirectory({
+                path: currentPath,
+                parent: currentParent,
+                items: currentItems,
+            });
+        }
+    );
+
+
+    clearAllButton.addEventListener(
+        "click",
+        () => {
+            if (operationRunning) {
+                return;
+            }
+
+            selectedPaths.clear();
+            selectedItems.clear();
+
+            updateSelectionSummary();
+            updateButtons();
+
+            renderDirectory({
+                path: currentPath,
+                parent: currentParent,
+                items: currentItems,
+            });
+        }
+    );
+
+
+    copySelectedButton.addEventListener(
+        "click",
+        async () => {
+            if (
+                !selectedPaths.size
+                || operationRunning
+            ) {
+                return;
+            }
+
+            operationRunning = true;
+            updateButtons();
+
+            setDriveActivity(
+                "reading",
+                "DRIVE READING"
+            );
+
+            clearMessage();
+
+            copyProgressPanel.hidden = false;
+            copyProgressTitle.textContent =
+                "Preparing Copy";
+            copyProgressPercent.textContent =
+                "0%";
+            copyProgressBar.style.width =
+                "0%";
+            copyProgressFile.textContent =
+                "Preparing selected items...";
+            copyProgressFiles.textContent =
+                "0 / 0";
+            copyProgressBytes.textContent =
+                "0 B";
+            copyProgressSpeed.textContent =
+                "-";
+            copyProgressElapsed.textContent =
+                "-";
+            copyProgressEta.textContent =
+                "-";
+
+            try {
+                const response = await fetch(
+                    "/api/inspector/copy",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+                        body: JSON.stringify(
+                            {
+                                paths: Array.from(
+                                    selectedPaths
+                                ),
+                            }
+                        ),
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                    || !data.operation_id
+                ) {
+                    throw new Error(
+                        data.error
+                        || "Copy could not start."
+                    );
+                }
+
+                const operation =
+                    await pollCopyOperation(
+                        data.operation_id
+                    );
+
+                const result =
+                    operation.result || {};
+
+                showMessage(
+                    "Copy complete. "
+                    + Number(
+                        result.files_copied || 0
+                    )
+                    + " file"
+                    + (
+                        Number(
+                            result.files_copied || 0
+                        ) === 1
+                        ? ""
+                        : "s"
+                    )
+                    + " copied to "
+                    + (
+                        result.destination
+                        || "/mnt/tapebox/restored"
+                    )
+                );
+
+                selectedPaths.clear();
+                selectedItems.clear();
+                updateSelectionSummary();
+
+                await browseDirectory(
+                    currentPath
+                );
+
+            } catch (error) {
+                copyProgressTitle.textContent =
+                    "Copy Failed";
+
+                showMessage(
+                    error.message
+                    || "Copy failed.",
+                    true
+                );
+
+            } finally {
+                operationRunning = false;
+
+                setDriveActivity(
+                    "ready",
+                    "DRIVE READY"
+                );
+
+                updateButtons();
+            }
+        }
+    );
+
+
+    browserUpButton.addEventListener(
+        "click",
+        () => {
+            if (currentParent !== null) {
+                browseDirectory(
+                    currentParent
+                );
+            }
+        }
+    );
+
+
+    inspectButton.addEventListener(
+        "click",
+        inspectTape
+    );
+
+    ejectButton.addEventListener(
+        "click",
+        ejectTape
+    );
+
+    updateButtons();
+    pollTapeStatus();
+})();
+</script>
+
+{% endblock %}

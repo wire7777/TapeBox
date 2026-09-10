@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+
+{% block title %}
+Restored Files - TapeBox
+{% endblock %}
+
+
+{% block content %}
+
+<div
+    style="
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 20px;
+        margin-bottom: 22px;
+    "
+>
+    <div>
+        <h1 style="margin-bottom: 6px;">
+            Restored Files
+        </h1>
+
+        <p
+            style="
+                margin: 0;
+                opacity: 0.75;
+            "
+        >
+            Files copied or restored from tape.
+        </p>
+    </div>
+</div>
+
+
+{% if error %}
+
+<div
+    style="
+        padding: 14px;
+        margin-bottom: 18px;
+        color: #ff6b6b;
+        border: 1px solid rgba(255,107,107,0.35);
+    "
+>
+    {{ error }}
+</div>
+
+{% endif %}
+
+
+<div
+    style="
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+    "
+>
+    {% if parent_path is not none %}
+
+    <a
+        class="action-button"
+        href="{{
+            url_for(
+                'restored_files_page',
+                path=parent_path
+            )
+        }}"
+        style="text-decoration: none;"
+    >
+        ↑ Up One Level
+    </a>
+
+    {% endif %}
+
+    <div>
+        <strong>Location:</strong>
+
+        <span>
+            /{{ current_path }}
+        </span>
+    </div>
+</div>
+
+
+<div style="overflow-x: auto;">
+
+    <table
+        style="
+            width: 100%;
+            border-collapse: collapse;
+        "
+    >
+        <thead>
+            <tr>
+                <th
+                    style="
+                        text-align: left;
+                        padding: 10px;
+                    "
+                >
+                    Name
+                </th>
+
+                <th
+                    style="
+                        text-align: left;
+                        padding: 10px;
+                        width: 130px;
+                    "
+                >
+                    Type
+                </th>
+
+                <th
+                    style="
+                        text-align: right;
+                        padding: 10px;
+                        width: 150px;
+                    "
+                >
+                    Size
+                </th>
+
+                <th
+                    style="
+                        text-align: right;
+                        padding: 10px;
+                        width: 150px;
+                    "
+                >
+                    Action
+                </th>
+            </tr>
+        </thead>
+
+        <tbody>
+
+        {% for row in rows %}
+
+            <tr>
+                <td style="padding: 10px;">
+
+                {% if row.type == "directory" %}
+
+                    <a
+                        href="{{
+                            url_for(
+                                'restored_files_page',
+                                path=row.path
+                            )
+                        }}"
+                        style="
+                            color: inherit;
+                            text-decoration: none;
+                        "
+                    >
+                        📁 {{ row.name }}
+                    </a>
+
+                {% else %}
+
+                    📄 {{ row.name }}
+
+                {% endif %}
+
+                </td>
+
+                <td style="padding: 10px;">
+                    {{ row.type }}
+                </td>
+
+                <td
+                    style="
+                        padding: 10px;
+                        text-align: right;
+                    "
+                >
+                    {% if row.size is none %}
+                        -
+                    {% else %}
+                        {{
+                            "%.2f"|format(
+                                row.size / 1000000000
+                            )
+                            ~ " GB"
+                            if row.size >= 1000000000
+                            else
+                            "%.2f"|format(
+                                row.size / 1000000
+                            )
+                            ~ " MB"
+                            if row.size >= 1000000
+                            else
+                            "%.2f"|format(
+                                row.size / 1000
+                            )
+                            ~ " KB"
+                            if row.size >= 1000
+                            else
+                            row.size|string ~ " B"
+                        }}
+                    {% endif %}
+                </td>
+
+                <td
+                    style="
+                        padding: 10px;
+                        text-align: right;
+                    "
+                >
+                {% if row.type == "file" %}
+
+                    <a
+                        class="action-button"
+                        href="{{
+                            url_for(
+                                'restored_file_download',
+                                path=row.path
+                            )
+                        }}"
+                        style="
+                            text-decoration: none;
+                            display: inline-flex;
+                            align-items: center;
+                            justify-content: center;
+                            box-sizing: border-box;
+                            min-width: 120px;
+                            min-height: 42px;
+                            padding: 0 18px;
+                            font: inherit;
+                            line-height: 1;
+                            text-align: center;
+                        "
+                    >
+                        Download
+                    </a>
+
+                {% else %}
+
+                    <a
+                        class="action-button"
+                        href="{{
+                            url_for(
+                                'restored_files_page',
+                                path=row.path
+                            )
+                        }}"
+                        style="
+                            text-decoration: none;
+                            display: inline-flex;
+                            align-items: center;
+                            justify-content: center;
+                            box-sizing: border-box;
+                            min-width: 120px;
+                            min-height: 42px;
+                            padding: 0 18px;
+                            font: inherit;
+                            line-height: 1;
+                            text-align: center;
+                        "
+                    >
+                        Open
+                    </a>
+
+                {% endif %}
+                </td>
+            </tr>
+
+        {% else %}
+
+            <tr>
+                <td
+                    colspan="4"
+                    style="
+                        padding: 24px;
+                        text-align: center;
+                        opacity: 0.65;
+                    "
+                >
+                    No restored files in this folder.
+                </td>
+            </tr>
+
+        {% endfor %}
+
+        </tbody>
+    </table>
+
+</div>
+
+{% endblock %}

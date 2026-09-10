@@ -77,6 +77,35 @@
                 Restore
             </a>
 
+            <a
+                href="{{ url_for('tape_inspector_page') }}"
+                class="{% if active_page == 'inspector' %}active{% endif %}"
+            >
+                Tape Inspector
+            </a>
+
+            <a
+                href="{{ url_for('restored_files_page') }}"
+                class="{% if active_page == 'restored' %}active{% endif %}"
+            >
+                Restored Files
+            </a>
+
+            <a
+                href="{{ url_for('staging_page') }}"
+                class="{% if active_page == 'staging' %}active{% endif %}"
+            >
+                Staging
+            </a>
+
+
+            <a
+                href="{{ url_for('settings_page') }}"
+                class="{% if active_page == 'settings' %}active{% endif %}"
+            >
+                Settings
+            </a>
+
 
         </nav>
 
