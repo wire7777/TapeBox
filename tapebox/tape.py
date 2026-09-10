@@ -1148,3 +1148,74 @@ def browse_ltfs_inspector(
         )
 
     return result
+
+
+def format_ltfs(
+    sg_device,
+    volume_name,
+    tape_serial=None,
+    force=False,
+    timeout=1800,
+):
+    """
+    Format the loaded cartridge as LTFS.
+
+    WARNING:
+        This is a destructive operation.
+
+    The caller is responsible for:
+      - exclusive tape-drive ownership
+      - confirming the cartridge is online
+      - ensuring no LTFS filesystem is mounted
+      - obtaining explicit user confirmation
+
+    This function deliberately does not use --wipe,
+    --long-wipe, or --destructive.
+    """
+
+    sg_device = str(sg_device).strip()
+    volume_name = str(volume_name).strip()
+
+    if not sg_device:
+        raise ValueError(
+            "Tape device is required."
+        )
+
+    if not volume_name:
+        raise ValueError(
+            "LTFS volume name is required."
+        )
+
+    command = [
+        "/usr/local/bin/mkltfs",
+        f"--device={sg_device}",
+        f"--volume-name={volume_name}",
+    ]
+
+    if tape_serial is not None:
+        tape_serial = str(
+            tape_serial
+        ).strip().upper()
+
+        if not re.fullmatch(
+            r"[A-Z0-9]{6}",
+            tape_serial,
+        ):
+            raise ValueError(
+                "Tape serial must contain exactly "
+                "6 alphanumeric characters."
+            )
+
+        command.append(
+            f"--tape-serial={tape_serial}"
+        )
+
+    if force:
+        command.append(
+            "--force"
+        )
+
+    return run_command(
+        command,
+        timeout=timeout,
+    )

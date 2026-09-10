@@ -106,6 +106,15 @@ Tape Inspector - TapeBox
         </button>
 
         <button
+            id="unmount-tape-button"
+            class="action-button"
+            type="button"
+            hidden
+        >
+            Unmount
+        </button>
+
+        <button
             id="eject-tape-button"
             class="action-button"
             type="button"
@@ -426,6 +435,10 @@ Tape Inspector - TapeBox
         "loaded-tape-description"
     );
 
+    const unmountButton = document.getElementById(
+        "unmount-tape-button"
+    );
+
     const ejectButton = document.getElementById(
         "eject-tape-button"
     );
@@ -627,8 +640,33 @@ Tape Inspector - TapeBox
             || operationRunning
         );
 
-        ejectButton.disabled = (
+        //
+        // Loaded but not mounted:
+        //     Inspect Loaded Tape + Eject Tape
+        //
+        // Mounted:
+        //     Unmount + Unmount & Eject
+        //
+        unmountButton.hidden = !tapeMounted;
+
+        ejectButton.hidden = (
+            !driveReady
+            && !tapeMounted
+        );
+
+        ejectButton.textContent = (
+            tapeMounted
+            ? "Unmount & Eject"
+            : "Eject Tape"
+        );
+
+        unmountButton.disabled = (
             !tapeMounted
+            || operationRunning
+        );
+
+        ejectButton.disabled = (
+            (!driveReady && !tapeMounted)
             || operationRunning
         );
 
@@ -1282,6 +1320,20 @@ Tape Inspector - TapeBox
 
             renderTape(data);
 
+            //
+            // Mount succeeded. Immediately load the mounted
+            // LTFS root directory instead of waiting for the
+            // next status poll or a browser refresh.
+            //
+            const loaded = await loadMountedInspector();
+
+            if (!loaded) {
+                throw new Error(
+                    "Tape mounted, but its contents "
+                    + "could not be loaded."
+                );
+            }
+
             showMessage(
                 "Tape mounted read-only."
             );
@@ -1299,12 +1351,91 @@ Tape Inspector - TapeBox
     }
 
 
-    async function ejectTape() {
+    async function unmountTape() {
         operationRunning = true;
         updateButtons();
 
         showMessage(
             "Unmounting LTFS..."
+        );
+
+        try {
+            const response = await fetch(
+                "/api/inspector/unmount",
+                {
+                    method: "POST",
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Tape unmount failed."
+                );
+            }
+
+            tapeMounted = false;
+
+            resultsPanel.hidden = true;
+
+            fileList.innerHTML = "";
+
+            currentPath = "";
+            currentParent = null;
+
+            selectedPaths.clear();
+            currentItems = [];
+
+            updateSelectionSummary();
+
+            statusPanel.classList.add(
+                "online"
+            );
+
+            statusPanel.classList.remove(
+                "offline"
+            );
+
+            statusState.textContent =
+                "DRIVE READY";
+
+            statusDetail.textContent =
+                "Cartridge remains loaded in the drive.";
+
+            showMessage(
+                "LTFS unmounted cleanly. "
+                + "Cartridge remains loaded in the drive."
+            );
+
+        } catch (error) {
+            showMessage(
+                error.message,
+                true
+            );
+
+        } finally {
+            operationRunning = false;
+            updateButtons();
+        }
+    }
+
+
+    async function ejectTape() {
+        const wasMounted = tapeMounted;
+
+        operationRunning = true;
+        updateButtons();
+
+        showMessage(
+            wasMounted
+            ? "Unmounting LTFS and ejecting tape..."
+            : "Ejecting tape..."
         );
 
         try {
@@ -1329,14 +1460,27 @@ Tape Inspector - TapeBox
             }
 
             tapeMounted = false;
+            driveReady = false;
 
             resultsPanel.hidden = true;
-            ejectButton.hidden = true;
 
             fileList.innerHTML = "";
 
+            currentPath = "";
+            currentParent = null;
+
+            selectedPaths.clear();
+            currentItems = [];
+
+            updateSelectionSummary();
+
             showMessage(
-                "LTFS unmounted cleanly and cartridge ejected."
+                wasMounted
+                ? (
+                    "LTFS unmounted cleanly "
+                    + "and cartridge ejected."
+                )
+                : "Cartridge ejected."
             );
 
         } catch (error) {
@@ -1509,6 +1653,12 @@ Tape Inspector - TapeBox
             } else if (driveReady) {
                 resultsPanel.hidden = true;
                 ejectButton.hidden = true;
+
+                //
+                // A cartridge is present again, so clear any
+                // stale message from the previous eject.
+                //
+                clearMessage();
 
                 currentPath = "";
                 currentParent = null;
@@ -1794,6 +1944,11 @@ Tape Inspector - TapeBox
     inspectButton.addEventListener(
         "click",
         inspectTape
+    );
+
+    unmountButton.addEventListener(
+        "click",
+        unmountTape
     );
 
     ejectButton.addEventListener(

@@ -11,7 +11,26 @@ Tapes · TapeBox
         <h1>Tapes</h1>
         <p>LTFS cartridge catalog</p>
     </div>
+
+    <div>
+        <button
+            type="button"
+            id="add-existing-tape-button"
+            class="action-button"
+        >
+            Add Existing LTFS Tape
+        </button>
+
+        <button
+            type="button"
+            id="prepare-tape-button"
+            class="action-button"
+        >
+            Prepare / Format Tape
+        </button>
+    </div>
 </div>
+
 
 <section class="card">
 
@@ -22,11 +41,13 @@ Tapes · TapeBox
         <table>
             <thead>
             <tr>
-                <th>Label</th>
+                <th>Name</th>
+                <th>LTFS Label</th>
                 <th>Generation</th>
                 <th>Status</th>
                 <th>Used</th>
                 <th>Capacity</th>
+                <th>Location</th>
                 <th>LTFS UUID</th>
             </tr>
             </thead>
@@ -39,13 +60,30 @@ Tapes · TapeBox
                 class="click-row"
                 onclick="window.location='{{ url_for('tape_detail_page', tape_id=tape['id']) }}'"
             >
+
+                <td>
+                    <div class="strong">
+                        {{ tape["friendly_name"] or tape["label"] }}
+                    </div>
+
+                    {% if tape["friendly_name"] %}
+                    <div class="subtext">
+                        TapeBox name
+                    </div>
+                    {% endif %}
+                </td>
+
                 <td class="strong">
                     {{ tape["label"] }}
                 </td>
 
                 <td>
                     {% if tape["generation"] %}
-                        LTO-{{ tape["generation"] }}
+                        {% if tape["generation"] | string | upper | truncate(4, true, '') == "LTO-" %}
+                            {{ tape["generation"] }}
+                        {% else %}
+                            LTO-{{ tape["generation"] }}
+                        {% endif %}
                     {% else %}
                         -
                     {% endif %}
@@ -63,9 +101,14 @@ Tapes · TapeBox
                     {{ tape["capacity_bytes"] | format_bytes }}
                 </td>
 
+                <td>
+                    {{ tape["location"] or "-" }}
+                </td>
+
                 <td class="mono">
                     {{ tape["ltfs_uuid"] or "-" }}
                 </td>
+
             </tr>
 
             {% endfor %}
@@ -84,5 +127,1332 @@ Tapes · TapeBox
     {% endif %}
 
 </section>
+
+
+<div
+    id="existing-tape-modal"
+    class="tapebox-modal"
+    hidden
+>
+    <div class="tapebox-modal-panel">
+
+        <div class="tapebox-modal-header">
+            <div>
+                <h2>Add Existing LTFS Tape</h2>
+                <p>
+                    Inspect and add an existing LTFS cartridge
+                    without modifying the tape.
+                </p>
+            </div>
+
+            <button
+                type="button"
+                id="existing-tape-close"
+                class="tapebox-modal-close"
+                aria-label="Close"
+            >
+                ×
+            </button>
+        </div>
+
+
+        <div
+            id="existing-tape-message"
+            class="tapebox-modal-message"
+        >
+            Insert an LTFS cartridge into the drive,
+            wait for it to become ready, then inspect it.
+        </div>
+
+
+        <div
+            id="existing-tape-detected"
+            hidden
+        >
+            <div class="existing-tape-grid">
+
+                <div>
+                    <div class="subtext">
+                        LTFS Label
+                    </div>
+                    <div
+                        id="detected-label"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div>
+                    <div class="subtext">
+                        Media
+                    </div>
+                    <div
+                        id="detected-generation"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div>
+                    <div class="subtext">
+                        Capacity
+                    </div>
+                    <div
+                        id="detected-capacity"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div>
+                    <div class="subtext">
+                        Used
+                    </div>
+                    <div
+                        id="detected-used"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div>
+                    <div class="subtext">
+                        Free
+                    </div>
+                    <div
+                        id="detected-free"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div>
+                    <div class="subtext">
+                        LTFS Format
+                    </div>
+                    <div
+                        id="detected-format"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+            </div>
+
+
+            <div class="existing-tape-uuid">
+                <div class="subtext">
+                    LTFS UUID
+                </div>
+
+                <div
+                    id="detected-uuid"
+                    class="mono"
+                >
+                    -
+                </div>
+            </div>
+
+
+            <div
+                id="existing-tape-already"
+                class="tapebox-modal-message success"
+                hidden
+            ></div>
+
+
+            <div
+                id="existing-tape-form"
+            >
+                <div class="form-group">
+                    <label for="existing-friendly-name">
+                        Friendly Name
+                    </label>
+
+                    <input
+                        type="text"
+                        id="existing-friendly-name"
+                        placeholder="Example: Cartoons Archive 03"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="existing-location">
+                        Location
+                    </label>
+
+                    <input
+                        type="text"
+                        id="existing-location"
+                        placeholder="Example: Shelf A"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="existing-notes">
+                        Notes
+                    </label>
+
+                    <textarea
+                        id="existing-notes"
+                        placeholder="Optional notes"
+                    ></textarea>
+                </div>
+            </div>
+        </div>
+
+
+        <div class="tapebox-modal-actions">
+
+            <button
+                type="button"
+                id="inspect-existing-button"
+                class="action-button"
+            >
+                Inspect Loaded Tape
+            </button>
+
+            <button
+                type="button"
+                id="register-existing-button"
+                class="action-button"
+                hidden
+            >
+                Add to Catalog
+            </button>
+
+        </div>
+
+    </div>
+</div>
+
+
+<div
+    id="format-tape-modal"
+    class="tapebox-modal"
+    hidden
+>
+    <div class="tapebox-modal-panel">
+
+        <div class="tapebox-modal-header">
+            <div>
+                <h2>Prepare / Format Tape</h2>
+
+                <p>
+                    Format a blank cartridge as LTFS and
+                    add it to the TapeBox catalog.
+                </p>
+            </div>
+
+            <button
+                type="button"
+                id="format-tape-close"
+                class="tapebox-modal-close"
+                aria-label="Close"
+            >
+                ×
+            </button>
+        </div>
+
+
+        <div
+            id="format-tape-message"
+            class="tapebox-modal-message"
+        >
+            Insert the tape you want to prepare,
+            wait for the drive to become ready,
+            then inspect it.
+        </div>
+
+
+        <div
+            id="format-tape-detected"
+            hidden
+        >
+            <div class="existing-tape-grid">
+
+                <div>
+                    <div class="subtext">
+                        Drive
+                    </div>
+
+                    <div
+                        id="format-detected-drive"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+
+                <div>
+                    <div class="subtext">
+                        Media
+                    </div>
+
+                    <div
+                        id="format-detected-media"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+
+                <div>
+                    <div class="subtext">
+                        Current Format
+                    </div>
+
+                    <div
+                        id="format-detected-state"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+
+                <div>
+                    <div class="subtext">
+                        Drive State
+                    </div>
+
+                    <div
+                        id="format-detected-ready"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+            </div>
+
+
+            <div
+                id="format-existing-ltfs"
+                class="tapebox-modal-message error"
+                hidden
+            ></div>
+
+
+            <div
+                id="format-fields"
+                hidden
+            >
+                <div class="form-group">
+                    <label for="format-label">
+                        LTFS Label
+                    </label>
+
+                    <input
+                        type="text"
+                        id="format-label"
+                        placeholder="Example: TAPE0003"
+                        autocomplete="off"
+                    >
+
+                    <div class="subtext">
+                        This becomes the LTFS volume name
+                        and TapeBox cartridge label.
+                    </div>
+                </div>
+
+
+                <div class="form-group">
+                    <label for="format-friendly-name">
+                        Friendly Name
+                    </label>
+
+                    <input
+                        type="text"
+                        id="format-friendly-name"
+                        placeholder="Optional friendly name"
+                    >
+                </div>
+
+
+                <div class="form-group">
+                    <label for="format-location">
+                        Location
+                    </label>
+
+                    <input
+                        type="text"
+                        id="format-location"
+                        placeholder="Example: Shelf A"
+                    >
+                </div>
+
+
+                <div class="form-group">
+                    <label for="format-notes">
+                        Notes
+                    </label>
+
+                    <textarea
+                        id="format-notes"
+                        placeholder="Optional notes"
+                    ></textarea>
+                </div>
+
+
+                <div
+                    class="tapebox-modal-message error"
+                >
+                    <strong>
+                        Formatting permanently erases the
+                        current contents of this cartridge.
+                    </strong>
+
+                    <div
+                        id="format-confirm-help"
+                        style="margin-top: 8px;"
+                    >
+                        Enter a tape label first.
+                    </div>
+                </div>
+
+
+                <div class="form-group">
+                    <label for="format-confirmation">
+                        Destructive Confirmation
+                    </label>
+
+                    <input
+                        type="text"
+                        id="format-confirmation"
+                        placeholder="FORMAT TAPE0003"
+                        autocomplete="off"
+                        spellcheck="false"
+                    >
+                </div>
+
+            </div>
+        </div>
+
+
+        <div class="tapebox-modal-actions">
+
+            <button
+                type="button"
+                id="format-preview-button"
+                class="action-button"
+            >
+                Inspect Loaded Tape
+            </button>
+
+            <button
+                type="button"
+                id="format-execute-button"
+                class="action-button"
+                hidden
+                disabled
+            >
+                Format Tape
+            </button>
+
+        </div>
+
+    </div>
+</div>
+
+{% endblock %}
+
+
+{% block scripts %}
+
+<script>
+(() => {
+    const modal =
+        document.getElementById(
+            "existing-tape-modal"
+        );
+
+    const openButton =
+        document.getElementById(
+            "add-existing-tape-button"
+        );
+
+    const closeButton =
+        document.getElementById(
+            "existing-tape-close"
+        );
+
+    const inspectButton =
+        document.getElementById(
+            "inspect-existing-button"
+        );
+
+    const registerButton =
+        document.getElementById(
+            "register-existing-button"
+        );
+
+    const message =
+        document.getElementById(
+            "existing-tape-message"
+        );
+
+    const detected =
+        document.getElementById(
+            "existing-tape-detected"
+        );
+
+    const already =
+        document.getElementById(
+            "existing-tape-already"
+        );
+
+    const form =
+        document.getElementById(
+            "existing-tape-form"
+        );
+
+    let cartridge = null;
+
+
+    function formatBytes(bytes) {
+        const value = Number(bytes || 0);
+
+        if (!value) {
+            return "0 B";
+        }
+
+        const units = [
+            "B",
+            "KB",
+            "MB",
+            "GB",
+            "TB",
+        ];
+
+        let size = value;
+        let index = 0;
+
+        while (
+            size >= 1000
+            && index < units.length - 1
+        ) {
+            size /= 1000;
+            index += 1;
+        }
+
+        return (
+            size.toFixed(
+                index >= 3 ? 2 : 1
+            )
+            + " "
+            + units[index]
+        );
+    }
+
+
+    function resetModal() {
+        cartridge = null;
+
+        detected.hidden = true;
+        already.hidden = true;
+        form.hidden = false;
+
+        registerButton.hidden = true;
+        inspectButton.hidden = false;
+        inspectButton.disabled = false;
+
+        message.className =
+            "tapebox-modal-message";
+
+        message.textContent =
+            "Insert an LTFS cartridge into the drive, "
+            + "wait for it to become ready, "
+            + "then inspect it.";
+
+        document.getElementById(
+            "existing-friendly-name"
+        ).value = "";
+
+        document.getElementById(
+            "existing-location"
+        ).value = "";
+
+        document.getElementById(
+            "existing-notes"
+        ).value = "";
+    }
+
+
+    function closeModal() {
+        modal.hidden = true;
+    }
+
+
+    openButton.addEventListener(
+        "click",
+        () => {
+            resetModal();
+            modal.hidden = false;
+        }
+    );
+
+
+    closeButton.addEventListener(
+        "click",
+        closeModal
+    );
+
+
+    modal.addEventListener(
+        "click",
+        (event) => {
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+    );
+
+
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (
+                event.key === "Escape"
+                && !modal.hidden
+            ) {
+                closeModal();
+            }
+        }
+    );
+
+
+    inspectButton.addEventListener(
+        "click",
+        async () => {
+            inspectButton.disabled = true;
+
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Inspecting LTFS cartridge read-only...";
+
+            try {
+                const response = await fetch(
+                    "/api/tapes/inspect-existing",
+                    {
+                        method: "POST",
+                        cache: "no-store",
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || "Tape inspection failed."
+                    );
+                }
+
+                cartridge = data.cartridge;
+
+                detected.hidden = false;
+
+                document.getElementById(
+                    "detected-label"
+                ).textContent =
+                    cartridge.label || "-";
+
+                document.getElementById(
+                    "detected-generation"
+                ).textContent =
+                    cartridge.generation || "-";
+
+                document.getElementById(
+                    "detected-capacity"
+                ).textContent =
+                    formatBytes(
+                        cartridge.capacity_bytes
+                    );
+
+                document.getElementById(
+                    "detected-used"
+                ).textContent =
+                    formatBytes(
+                        cartridge.used_bytes
+                    );
+
+                document.getElementById(
+                    "detected-free"
+                ).textContent =
+                    formatBytes(
+                        cartridge.free_bytes
+                    );
+
+                document.getElementById(
+                    "detected-format"
+                ).textContent =
+                    cartridge.format_version
+                    || "-";
+
+                document.getElementById(
+                    "detected-uuid"
+                ).textContent =
+                    cartridge.uuid || "-";
+
+                message.textContent =
+                    "LTFS cartridge detected. "
+                    + "Inspection was read-only.";
+
+                if (
+                    data.registered
+                    && data.existing_tape
+                ) {
+                    const existing =
+                        data.existing_tape;
+
+                    already.hidden = false;
+                    form.hidden = true;
+
+                    already.textContent =
+                        "This cartridge is already "
+                        + "registered as "
+                        + (
+                            existing.friendly_name
+                            || existing.label
+                        )
+                        + ".";
+
+                    registerButton.hidden = true;
+
+                } else {
+                    already.hidden = true;
+                    form.hidden = false;
+                    registerButton.hidden = false;
+
+                    document.getElementById(
+                        "existing-friendly-name"
+                    ).value =
+                        cartridge.label || "";
+                }
+
+            } catch (error) {
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+            } finally {
+                inspectButton.disabled = false;
+            }
+        }
+    );
+
+
+    registerButton.addEventListener(
+        "click",
+        async () => {
+            if (!cartridge) {
+                return;
+            }
+
+            registerButton.disabled = true;
+
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Adding cartridge to catalog...";
+
+            const payload = {
+                ...cartridge,
+
+                friendly_name:
+                    document.getElementById(
+                        "existing-friendly-name"
+                    ).value,
+
+                location:
+                    document.getElementById(
+                        "existing-location"
+                    ).value,
+
+                notes:
+                    document.getElementById(
+                        "existing-notes"
+                    ).value,
+            };
+
+            try {
+                const response = await fetch(
+                    "/api/tapes/register-existing",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+
+                        body: JSON.stringify(
+                            payload
+                        ),
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || (
+                            "Could not add "
+                            + "cartridge."
+                        )
+                    );
+                }
+
+                message.className =
+                    "tapebox-modal-message success";
+
+                message.textContent =
+                    data.message
+                    || "Cartridge added.";
+
+                registerButton.hidden = true;
+                inspectButton.hidden = true;
+
+                window.setTimeout(
+                    () => {
+                        window.location.reload();
+                    },
+                    900
+                );
+
+            } catch (error) {
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+                registerButton.disabled = false;
+            }
+        }
+    );
+})();
+</script>
+
+
+<script>
+(() => {
+    const modal =
+        document.getElementById(
+            "format-tape-modal"
+        );
+
+    const openButton =
+        document.getElementById(
+            "prepare-tape-button"
+        );
+
+    const closeButton =
+        document.getElementById(
+            "format-tape-close"
+        );
+
+    const previewButton =
+        document.getElementById(
+            "format-preview-button"
+        );
+
+    const formatButton =
+        document.getElementById(
+            "format-execute-button"
+        );
+
+    const message =
+        document.getElementById(
+            "format-tape-message"
+        );
+
+    const detected =
+        document.getElementById(
+            "format-tape-detected"
+        );
+
+    const existingLtfs =
+        document.getElementById(
+            "format-existing-ltfs"
+        );
+
+    const fields =
+        document.getElementById(
+            "format-fields"
+        );
+
+    const labelInput =
+        document.getElementById(
+            "format-label"
+        );
+
+    const confirmationInput =
+        document.getElementById(
+            "format-confirmation"
+        );
+
+    const confirmHelp =
+        document.getElementById(
+            "format-confirm-help"
+        );
+
+    let preview = null;
+    let formatting = false;
+
+
+    function expectedConfirmation() {
+        const label =
+            labelInput.value
+                .trim()
+                .toUpperCase();
+
+        if (!label) {
+            return "";
+        }
+
+        return "FORMAT " + label;
+    }
+
+
+    function updateConfirmation() {
+        const expected =
+            expectedConfirmation();
+
+        if (!expected) {
+            confirmHelp.textContent =
+                "Enter a tape label first.";
+
+            confirmationInput.placeholder =
+                "FORMAT TAPE0003";
+
+            formatButton.disabled = true;
+
+            return;
+        }
+
+        confirmHelp.textContent =
+            "To continue, type exactly: "
+            + expected;
+
+        confirmationInput.placeholder =
+            expected;
+
+        formatButton.disabled = (
+            formatting
+            || confirmationInput.value.trim()
+                !== expected
+        );
+    }
+
+
+    function resetModal() {
+        preview = null;
+        formatting = false;
+
+        detected.hidden = true;
+        fields.hidden = true;
+        existingLtfs.hidden = true;
+
+        previewButton.hidden = false;
+        previewButton.disabled = false;
+
+        formatButton.hidden = true;
+        formatButton.disabled = true;
+
+        labelInput.value = "";
+        confirmationInput.value = "";
+
+        document.getElementById(
+            "format-friendly-name"
+        ).value = "";
+
+        document.getElementById(
+            "format-location"
+        ).value = "";
+
+        document.getElementById(
+            "format-notes"
+        ).value = "";
+
+        message.className =
+            "tapebox-modal-message";
+
+        message.textContent =
+            "Insert the tape you want to prepare, "
+            + "wait for the drive to become ready, "
+            + "then inspect it.";
+
+        updateConfirmation();
+    }
+
+
+    function closeModal() {
+        if (formatting) {
+            return;
+        }
+
+        modal.hidden = true;
+    }
+
+
+    openButton.addEventListener(
+        "click",
+        () => {
+            resetModal();
+            modal.hidden = false;
+        }
+    );
+
+
+    closeButton.addEventListener(
+        "click",
+        closeModal
+    );
+
+
+    modal.addEventListener(
+        "click",
+        (event) => {
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+    );
+
+
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (
+                event.key === "Escape"
+                && !modal.hidden
+            ) {
+                closeModal();
+            }
+        }
+    );
+
+
+    labelInput.addEventListener(
+        "input",
+        () => {
+            labelInput.value =
+                labelInput.value.toUpperCase();
+
+            updateConfirmation();
+        }
+    );
+
+
+    confirmationInput.addEventListener(
+        "input",
+        updateConfirmation
+    );
+
+
+    previewButton.addEventListener(
+        "click",
+        async () => {
+            previewButton.disabled = true;
+
+            formatButton.hidden = true;
+            fields.hidden = true;
+            existingLtfs.hidden = true;
+            detected.hidden = true;
+
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Checking cartridge safely...";
+
+            try {
+                const response = await fetch(
+                    "/api/tapes/format-preview",
+                    {
+                        method: "POST",
+                        cache: "no-store",
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || (
+                            "Could not inspect "
+                            + "cartridge."
+                        )
+                    );
+                }
+
+                preview = data;
+
+                detected.hidden = false;
+
+                document.getElementById(
+                    "format-detected-drive"
+                ).textContent =
+                    data.drive?.description
+                    || "-";
+
+                document.getElementById(
+                    "format-detected-media"
+                ).textContent =
+                    data.media?.generation
+                    || "-";
+
+                document.getElementById(
+                    "format-detected-ready"
+                ).textContent =
+                    (
+                        data.media?.online
+                        && data.media?.available
+                    )
+                        ? "ONLINE / READY"
+                        : "NOT READY";
+
+                if (data.ltfs_detected) {
+                    document.getElementById(
+                        "format-detected-state"
+                    ).textContent =
+                        "Existing LTFS";
+
+                    existingLtfs.hidden = false;
+
+                    const oldLabel =
+                        data.existing_ltfs?.label
+                        || "Unknown";
+
+                    const oldUuid =
+                        data.existing_ltfs?.uuid
+                        || "Unknown";
+
+                    existingLtfs.textContent =
+                        "Existing LTFS volume detected: "
+                        + oldLabel
+                        + " · UUID "
+                        + oldUuid
+                        + ". TapeBox will not overwrite "
+                        + "this cartridge through the "
+                        + "blank-tape preparation path.";
+
+                    fields.hidden = true;
+                    formatButton.hidden = true;
+
+                    message.className =
+                        "tapebox-modal-message error";
+
+                    message.textContent =
+                        "Existing LTFS cartridge detected. "
+                        + "Formatting is blocked.";
+
+                } else {
+                    document.getElementById(
+                        "format-detected-state"
+                    ).textContent =
+                        "Blank / unpartitioned";
+
+                    fields.hidden = false;
+                    formatButton.hidden = false;
+
+                    message.className =
+                        "tapebox-modal-message success";
+
+                    message.textContent =
+                        "Cartridge is online and no "
+                        + "readable LTFS filesystem was "
+                        + "detected. It can be prepared "
+                        + "as a new TapeBox LTFS tape.";
+
+                    labelInput.focus();
+                    updateConfirmation();
+                }
+
+            } catch (error) {
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+            } finally {
+                previewButton.disabled = false;
+            }
+        }
+    );
+
+
+    formatButton.addEventListener(
+        "click",
+        async () => {
+            if (!preview) {
+                return;
+            }
+
+            const label =
+                labelInput.value
+                    .trim()
+                    .toUpperCase();
+
+            const confirmation =
+                confirmationInput.value.trim();
+
+            const expected =
+                expectedConfirmation();
+
+            if (
+                !label
+                || !expected
+                || confirmation !== expected
+            ) {
+                updateConfirmation();
+                return;
+            }
+
+            formatting = true;
+
+            formatButton.disabled = true;
+            previewButton.disabled = true;
+            closeButton.disabled = true;
+
+            labelInput.disabled = true;
+            confirmationInput.disabled = true;
+
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Formatting cartridge as LTFS. "
+                + "Do not remove the tape or stop "
+                + "TapeBox while this operation is "
+                + "running...";
+
+            const payload = {
+                label: label,
+                confirmation: confirmation,
+
+                friendly_name:
+                    document.getElementById(
+                        "format-friendly-name"
+                    ).value,
+
+                location:
+                    document.getElementById(
+                        "format-location"
+                    ).value,
+
+                notes:
+                    document.getElementById(
+                        "format-notes"
+                    ).value,
+            };
+
+            try {
+                const response = await fetch(
+                    "/api/tapes/format",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+
+                        body: JSON.stringify(
+                            payload
+                        ),
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || "Tape formatting failed."
+                    );
+                }
+
+                message.className =
+                    "tapebox-modal-message success";
+
+                const uuid =
+                    data.cartridge?.uuid
+                    || "";
+
+                message.textContent =
+                    data.message
+                    + (
+                        uuid
+                            ? " LTFS UUID: " + uuid
+                            : ""
+                    );
+
+                formatButton.hidden = true;
+                previewButton.hidden = true;
+
+                window.setTimeout(
+                    () => {
+                        window.location.reload();
+                    },
+                    1800
+                );
+
+            } catch (error) {
+                formatting = false;
+
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+                formatButton.disabled = false;
+                previewButton.disabled = false;
+                closeButton.disabled = false;
+
+                labelInput.disabled = false;
+                confirmationInput.disabled = false;
+
+                updateConfirmation();
+            }
+        }
+    );
+})();
+</script>
 
 {% endblock %}

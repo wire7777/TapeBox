@@ -149,6 +149,33 @@ def initialize_database():
             """
         )
 
+        #
+        # Tape catalog metadata added after the original schema.
+        # Existing catalogs are upgraded in place.
+        #
+        tape_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(tapes)"
+            ).fetchall()
+        }
+
+        if "friendly_name" not in tape_columns:
+            db.execute(
+                """
+                ALTER TABLE tapes
+                ADD COLUMN friendly_name TEXT
+                """
+            )
+
+        if "location" not in tape_columns:
+            db.execute(
+                """
+                ALTER TABLE tapes
+                ADD COLUMN location TEXT
+                """
+            )
+
 
 
 DEFAULT_SETTINGS = {
@@ -278,6 +305,60 @@ def add_tape(label):
         )
 
         return cursor.lastrowid
+
+
+def update_tape_catalog_metadata(
+    tape_id,
+    friendly_name=None,
+    location=None,
+    notes=None,
+):
+    """
+    Update human-readable TapeBox cartridge metadata.
+
+    These fields do not alter the physical LTFS label or UUID.
+    """
+
+    friendly_name = (
+        friendly_name.strip()
+        if friendly_name
+        else None
+    )
+
+    location = (
+        location.strip()
+        if location
+        else None
+    )
+
+    notes = (
+        notes.strip()
+        if notes
+        else None
+    )
+
+    with connect() as db:
+        cursor = db.execute(
+            """
+            UPDATE tapes
+            SET
+                friendly_name = ?,
+                location = ?,
+                notes = ?
+            WHERE id = ?
+            """,
+            (
+                friendly_name,
+                location,
+                notes,
+                tape_id,
+            ),
+        )
+
+        if cursor.rowcount == 0:
+            raise ValueError(
+                "Tape not found."
+            )
 
 
 def list_tapes():
@@ -543,6 +624,238 @@ def reconcile_loaded_tape(
             "matched_by": None,
             "tape": None,
         }
+
+
+def register_existing_ltfs_tape(
+    label,
+    ltfs_uuid,
+    generation=None,
+    capacity_bytes=None,
+    used_bytes=None,
+    barcode=None,
+    friendly_name=None,
+    location=None,
+    notes=None,
+):
+    """
+    Explicitly register an existing LTFS cartridge.
+
+    This is intentionally separate from reconcile_loaded_tape().
+    Unknown cartridges must never be registered merely because
+    they were inserted or inspected.
+
+    LTFS UUID is the permanent physical cartridge identity.
+    """
+
+    label = (
+        label.strip().upper()
+        if label
+        else None
+    )
+
+    ltfs_uuid = (
+        ltfs_uuid.strip()
+        if ltfs_uuid
+        else None
+    )
+
+    barcode = (
+        barcode.strip()
+        if barcode
+        else None
+    )
+
+    friendly_name = (
+        friendly_name.strip()
+        if friendly_name
+        else None
+    )
+
+    location = (
+        location.strip()
+        if location
+        else None
+    )
+
+    notes = (
+        notes.strip()
+        if notes
+        else None
+    )
+
+    if not label:
+        raise ValueError(
+            "LTFS cartridge label is required."
+        )
+
+    if not ltfs_uuid:
+        raise ValueError(
+            "LTFS cartridge UUID is required."
+        )
+
+    now = utc_now()
+
+    with connect() as db:
+
+        existing_uuid = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE ltfs_uuid = ?
+            """,
+            (ltfs_uuid,),
+        ).fetchone()
+
+        if existing_uuid:
+            return {
+                "state": "already_registered",
+                "tape": existing_uuid,
+            }
+
+        existing_label = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE label = ?
+            """,
+            (label,),
+        ).fetchone()
+
+        if existing_label:
+            existing_ltfs_uuid = (
+                existing_label["ltfs_uuid"]
+            )
+
+            if (
+                existing_ltfs_uuid
+                and existing_ltfs_uuid != ltfs_uuid
+            ):
+                return {
+                    "state": "conflict",
+                    "tape": existing_label,
+                    "message": (
+                        f"Catalog label {label} is already "
+                        f"assigned to LTFS UUID "
+                        f"{existing_ltfs_uuid}."
+                    ),
+                }
+
+            #
+            # This is an older/manual TapeBox catalog entry
+            # that has never had its physical LTFS identity
+            # attached. Claim it instead of creating a
+            # duplicate row.
+            #
+            db.execute(
+                """
+                UPDATE tapes
+                SET
+                    ltfs_uuid = ?,
+                    barcode = COALESCE(?, barcode),
+                    generation = COALESCE(?, generation),
+                    capacity_bytes = COALESCE(
+                        ?,
+                        capacity_bytes
+                    ),
+                    used_bytes = COALESCE(
+                        ?,
+                        used_bytes
+                    ),
+                    friendly_name = COALESCE(
+                        ?,
+                        friendly_name
+                    ),
+                    location = COALESCE(
+                        ?,
+                        location
+                    ),
+                    notes = COALESCE(
+                        ?,
+                        notes
+                    ),
+                    last_seen_at = ?
+                WHERE id = ?
+                """,
+                (
+                    ltfs_uuid,
+                    barcode,
+                    generation,
+                    capacity_bytes,
+                    used_bytes,
+                    friendly_name,
+                    location,
+                    notes,
+                    now,
+                    existing_label["id"],
+                ),
+            )
+
+            tape = db.execute(
+                """
+                SELECT *
+                FROM tapes
+                WHERE id = ?
+                """,
+                (existing_label["id"],),
+            ).fetchone()
+
+            return {
+                "state": "registered",
+                "matched_existing_label": True,
+                "tape": tape,
+            }
+
+        cursor = db.execute(
+            """
+            INSERT INTO tapes (
+                label,
+                barcode,
+                ltfs_uuid,
+                generation,
+                capacity_bytes,
+                used_bytes,
+                status,
+                created_at,
+                last_seen_at,
+                notes,
+                friendly_name,
+                location
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                label,
+                barcode,
+                ltfs_uuid,
+                generation,
+                capacity_bytes,
+                used_bytes or 0,
+                "available",
+                now,
+                now,
+                notes,
+                friendly_name,
+                location,
+            ),
+        )
+
+        tape_id = cursor.lastrowid
+
+        tape = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE id = ?
+            """,
+            (tape_id,),
+        ).fetchone()
+
+        return {
+            "state": "registered",
+            "matched_existing_label": False,
+            "tape": tape,
+        }
+
 
 
 def record_archived_file(

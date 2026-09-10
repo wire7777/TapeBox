@@ -26,6 +26,9 @@ from tapebox.database import (
     get_archive_job_files,
     get_archive_restore_plan,
     get_tape_by_id,
+    get_tape_by_uuid,
+    update_tape_catalog_metadata,
+    register_existing_ltfs_tape,
     get_files_by_tape,
     search_files,
     get_file_parts,
@@ -52,12 +55,14 @@ from tapebox.archive import (
 from tapebox.tape import (
     discover_drives,
     get_tape_status,
+    inspect_ltfs,
     mount_ltfs_inspector,
     browse_ltfs_inspector,
     get_ltfs_virtual_attribute,
     _is_mounted,
     _unmount_ltfs,
     eject_tape,
+    format_ltfs,
 )
 
 
@@ -1083,6 +1088,60 @@ def tapes_page():
         "tapes.html",
         active_page="tapes",
         tapes=tapes,
+    )
+
+
+@app.route(
+    "/tapes/<int:tape_id>/metadata",
+    methods=["POST"],
+)
+def update_tape_metadata_action(tape_id):
+    """
+    Update TapeBox-only cartridge metadata.
+
+    This does not modify the physical LTFS cartridge.
+    """
+
+    from flask import (
+        request,
+        redirect,
+        url_for,
+    )
+
+    initialize_database()
+
+    tape = get_tape_by_id(
+        tape_id
+    )
+
+    if tape is None:
+        return (
+            "Tape not found",
+            404,
+        )
+
+    update_tape_catalog_metadata(
+        tape_id=tape_id,
+        friendly_name=request.form.get(
+            "friendly_name",
+            "",
+        ),
+        location=request.form.get(
+            "location",
+            "",
+        ),
+        notes=request.form.get(
+            "notes",
+            "",
+        ),
+    )
+
+    return redirect(
+        url_for(
+            "tape_detail_page",
+            tape_id=tape_id,
+            saved="1",
+        )
     )
 
 
@@ -3131,6 +3190,1057 @@ def settings_page():
 
 
 
+@app.route(
+    "/api/tapes/register-existing",
+    methods=["POST"],
+)
+def register_existing_tape_api():
+    """
+    Explicitly add a previously-inspected LTFS cartridge
+    to the TapeBox catalog.
+
+    This updates SQLite only. It does not mount, format,
+    write to, or otherwise modify the physical cartridge.
+    """
+
+    initialize_database()
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    label = str(
+        data.get("label") or ""
+    ).strip()
+
+    ltfs_uuid = str(
+        data.get("uuid") or ""
+    ).strip()
+
+    if not label:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "LTFS cartridge label is required."
+                ),
+            }
+        ), 400
+
+    if not ltfs_uuid:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "LTFS cartridge UUID is required."
+                ),
+            }
+        ), 400
+
+    try:
+        result = (
+            register_existing_ltfs_tape(
+                label=label,
+                ltfs_uuid=ltfs_uuid,
+                generation=data.get(
+                    "generation"
+                ),
+                capacity_bytes=data.get(
+                    "capacity_bytes"
+                ),
+                used_bytes=data.get(
+                    "used_bytes"
+                ),
+                barcode=data.get(
+                    "barcode"
+                ),
+                friendly_name=data.get(
+                    "friendly_name"
+                ),
+                location=data.get(
+                    "location"
+                ),
+                notes=data.get(
+                    "notes"
+                ),
+            )
+        )
+
+    except ValueError as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 400
+
+    state = result.get("state")
+
+    tape = result.get("tape")
+
+    tape_data = (
+        dict(tape)
+        if tape is not None
+        else None
+    )
+
+    if state == "conflict":
+        return jsonify(
+            {
+                "success": False,
+                "conflict": True,
+                "state": state,
+                "error": (
+                    result.get("message")
+                    or (
+                        "Tape catalog identity "
+                        "conflict."
+                    )
+                ),
+                "tape": tape_data,
+            }
+        ), 409
+
+    if state == "already_registered":
+        return jsonify(
+            {
+                "success": True,
+                "already_registered": True,
+                "state": state,
+                "tape": tape_data,
+                "message": (
+                    "This LTFS cartridge is "
+                    "already registered."
+                ),
+            }
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "already_registered": False,
+            "state": state,
+            "tape": tape_data,
+            "message": (
+                "LTFS cartridge added "
+                "to the TapeBox catalog."
+            ),
+        }
+    )
+
+
+
+@app.route(
+    "/api/tapes/format",
+    methods=["POST"],
+)
+def format_tape_api():
+    """
+    Format the loaded cartridge as LTFS and register it.
+
+    DESTRUCTIVE.
+
+    Requires exact confirmation:
+        FORMAT <LABEL>
+
+    Example:
+        FORMAT TAPE0003
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    initialize_database()
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    label = str(
+        data.get("label") or ""
+    ).strip().upper()
+
+    confirmation = str(
+        data.get("confirmation") or ""
+    ).strip()
+
+    friendly_name = str(
+        data.get("friendly_name") or ""
+    ).strip() or None
+
+    location = str(
+        data.get("location") or ""
+    ).strip() or None
+
+    notes = str(
+        data.get("notes") or ""
+    ).strip() or None
+
+    #
+    # TapeBox labels are intentionally simple.
+    #
+    # mkltfs has a separate six-character tape serial
+    # option, so do not confuse the TapeBox/LTFS volume
+    # name with that optional serial.
+    #
+    if not label:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Tape label is required."
+                ),
+            }
+        ), 400
+
+    if len(label) > 80:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Tape label is too long."
+                ),
+            }
+        ), 400
+
+    expected_confirmation = (
+        f"FORMAT {label}"
+    )
+
+    if confirmation != expected_confirmation:
+        return jsonify(
+            {
+                "success": False,
+                "confirmation_required": True,
+                "expected_confirmation": (
+                    expected_confirmation
+                ),
+                "error": (
+                    "Destructive confirmation did "
+                    "not match."
+                ),
+            }
+        ), 400
+
+    operation_owner = (
+        f"format:{uuid.uuid4()}"
+    )
+
+    #
+    # Reserve the one physical tape drive before doing
+    # anything with the cartridge.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "currently active."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_owner
+        )
+
+    try:
+        inspector_mount = Path(
+            "/mnt/tapebox/ltfs-inspect"
+        )
+
+        normal_mount = Path(
+            "/mnt/tapebox/ltfs"
+        )
+
+        #
+        # Never format a mounted cartridge.
+        #
+        if (
+            _is_mounted(inspector_mount)
+            or _is_mounted(normal_mount)
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "An LTFS filesystem is "
+                        "currently mounted. Unmount "
+                        "the cartridge before "
+                        "formatting."
+                    ),
+                }
+            ), 409
+
+        drives = discover_drives()
+
+        if not drives:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "No tape drive detected."
+                    ),
+                }
+            ), 404
+
+        drive = drives[0]
+
+        nst_device = drive.get(
+            "nst_device"
+        )
+
+        sg_device = drive.get(
+            "sg_device"
+        )
+
+        if not nst_device or not sg_device:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape drive devices could "
+                        "not be resolved."
+                    ),
+                }
+            ), 500
+
+        status = get_tape_status(
+            nst_device
+        )
+
+        if not (
+            status.get("available")
+            and status.get("online")
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape cartridge is not "
+                        "online and ready."
+                    ),
+                }
+            ), 409
+
+        #
+        # Final read-only check immediately before the
+        # destructive operation.
+        #
+        # IMPORTANT:
+        # This first implementation intentionally refuses
+        # to overwrite an existing LTFS cartridge.
+        #
+        before = inspect_ltfs(
+            sg_device=sg_device,
+        )
+
+        if before.get("mounted"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Pre-format inspection did "
+                        "not cleanly unmount LTFS. "
+                        "Formatting was cancelled."
+                    ),
+                }
+            ), 409
+
+        if (
+            before.get("ltfs")
+            and before.get("uuid")
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "existing_ltfs": True,
+                    "error": (
+                        "This cartridge already "
+                        "contains LTFS. TapeBox will "
+                        "not overwrite an existing "
+                        "LTFS cartridge through the "
+                        "blank-tape format path."
+                    ),
+                    "cartridge": {
+                        "label": before.get(
+                            "label"
+                        ),
+                        "uuid": before.get(
+                            "uuid"
+                        ),
+                    },
+                }
+            ), 409
+
+        #
+        # DESTRUCTIVE POINT.
+        #
+        # Do NOT use --force for the normal blank /
+        # unpartitioned cartridge path.
+        #
+        result = format_ltfs(
+            sg_device=sg_device,
+            volume_name=label,
+            force=False,
+        )
+
+        if result.get("returncode") != 0:
+            return jsonify(
+                {
+                    "success": False,
+                    "formatted": False,
+                    "error": (
+                        result.get("stderr")
+                        or result.get("stdout")
+                        or "mkltfs failed."
+                    ),
+                }
+            ), 500
+
+        #
+        # Verify the resulting cartridge by mounting it
+        # READ ONLY and obtaining its permanent LTFS UUID.
+        #
+        after = inspect_ltfs(
+            sg_device=sg_device,
+        )
+
+        if after.get("mounted"):
+            return jsonify(
+                {
+                    "success": False,
+                    "formatted": True,
+                    "registered": False,
+                    "error": (
+                        "Tape was formatted, but "
+                        "post-format LTFS inspection "
+                        "did not cleanly unmount. "
+                        "The tape was NOT added to "
+                        "the catalog."
+                    ),
+                }
+            ), 500
+
+        if not (
+            after.get("ltfs")
+            and after.get("uuid")
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "formatted": True,
+                    "registered": False,
+                    "error": (
+                        "Tape was formatted, but "
+                        "TapeBox could not verify "
+                        "the new LTFS filesystem. "
+                        "The tape was NOT added to "
+                        "the catalog."
+                    ),
+                    "inspection_error": (
+                        after.get("error")
+                    ),
+                }
+            ), 500
+
+        generation = (
+            after.get("generation")
+            or status.get("density")
+        )
+
+        #
+        # Normalize values such as "LTO-6" to integer 6
+        # for the existing TapeBox schema.
+        #
+        if isinstance(generation, str):
+            generation_text = (
+                generation.strip().upper()
+            )
+
+            if generation_text.startswith(
+                "LTO-"
+            ):
+                generation_text = (
+                    generation_text[4:]
+                )
+
+            try:
+                generation = int(
+                    generation_text
+                )
+            except ValueError:
+                generation = None
+
+        registration = (
+            register_existing_ltfs_tape(
+                label=(
+                    after.get("label")
+                    or label
+                ),
+                ltfs_uuid=after.get(
+                    "uuid"
+                ),
+                generation=generation,
+                capacity_bytes=after.get(
+                    "capacity_bytes"
+                ),
+                used_bytes=after.get(
+                    "used_bytes"
+                ),
+                barcode=after.get(
+                    "barcode"
+                ),
+                friendly_name=(
+                    friendly_name
+                    or label
+                ),
+                location=location,
+                notes=notes,
+            )
+        )
+
+        state = registration.get(
+            "state"
+        )
+
+        tape = registration.get(
+            "tape"
+        )
+
+        if state == "conflict":
+            return jsonify(
+                {
+                    "success": False,
+                    "formatted": True,
+                    "registered": False,
+                    "error": (
+                        registration.get(
+                            "message"
+                        )
+                        or (
+                            "Tape was formatted but "
+                            "could not be registered "
+                            "because of a catalog "
+                            "identity conflict."
+                        )
+                    ),
+                }
+            ), 409
+
+        return jsonify(
+            {
+                "success": True,
+                "formatted": True,
+                "registered": True,
+                "state": state,
+                "message": (
+                    f"{label} was formatted as "
+                    "LTFS, verified, and added "
+                    "to the TapeBox catalog."
+                ),
+                "cartridge": {
+                    "label": (
+                        after.get("label")
+                        or label
+                    ),
+                    "uuid": after.get(
+                        "uuid"
+                    ),
+                    "generation": generation,
+                    "capacity_bytes": (
+                        after.get(
+                            "capacity_bytes"
+                        )
+                    ),
+                    "used_bytes": (
+                        after.get(
+                            "used_bytes"
+                        )
+                    ),
+                    "free_bytes": (
+                        after.get(
+                            "free_bytes"
+                        )
+                    ),
+                },
+                "tape": (
+                    dict(tape)
+                    if tape is not None
+                    else None
+                ),
+            }
+        )
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_owner
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+
+
+@app.route(
+    "/api/tapes/format-preview",
+    methods=["POST"],
+)
+def format_tape_preview_api():
+    """
+    Inspect the currently loaded cartridge before formatting.
+
+    This endpoint is NON-DESTRUCTIVE.
+
+    It reserves the physical tape drive, checks cartridge
+    readiness, and attempts a read-only LTFS inspection.
+
+    No mkltfs command is executed here.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    operation_owner = "format_preview"
+
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "currently active."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_owner
+        )
+
+    try:
+        inspector_mount = Path(
+            "/mnt/tapebox/ltfs-inspect"
+        )
+
+        if _is_mounted(inspector_mount):
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Tape Inspector currently has "
+                        "an LTFS cartridge mounted. "
+                        "Unmount it before preparing "
+                        "a tape."
+                    ),
+                }
+            ), 409
+
+        drives = discover_drives()
+
+        if not drives:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "No tape drive detected."
+                    ),
+                }
+            ), 404
+
+        drive = drives[0]
+
+        nst_device = drive.get(
+            "nst_device"
+        )
+
+        sg_device = drive.get(
+            "sg_device"
+        )
+
+        if not nst_device or not sg_device:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape drive devices could "
+                        "not be resolved."
+                    ),
+                }
+            ), 500
+
+        status = get_tape_status(
+            nst_device
+        )
+
+        if not (
+            status.get("available")
+            and status.get("online")
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape cartridge is not online "
+                        "and ready."
+                    ),
+                }
+            ), 409
+
+        #
+        # Try a READ-ONLY LTFS inspection.
+        #
+        # A blank/non-LTFS cartridge normally cannot be
+        # mounted by LTFS, which is expected here.
+        #
+        info = inspect_ltfs(
+            sg_device=sg_device,
+        )
+
+        ltfs_detected = bool(
+            info.get("ltfs")
+            and info.get("uuid")
+            and not info.get("mounted")
+        )
+
+        existing_tape = None
+
+        if ltfs_detected:
+            existing = get_tape_by_uuid(
+                info.get("uuid")
+            )
+
+            if existing:
+                existing_tape = dict(
+                    existing
+                )
+
+        if ltfs_detected:
+            warning = (
+                "This cartridge already contains an "
+                "LTFS filesystem. Formatting it will "
+                "destroy the existing LTFS volume and "
+                "its contents."
+            )
+
+        else:
+            warning = (
+                "No readable LTFS filesystem was "
+                "detected. The cartridge may be blank, "
+                "scratch, non-LTFS, or unreadable. "
+                "Formatting will overwrite the medium."
+            )
+
+        return jsonify(
+            {
+                "success": True,
+                "destructive": True,
+                "eligible_for_format": True,
+                "ltfs_detected": ltfs_detected,
+                "warning": warning,
+
+                "drive": {
+                    "description": (
+                        drive.get("description")
+                        or drive.get("name")
+                        or "Tape Drive"
+                    ),
+                    "nst_device": nst_device,
+                    "sg_device": sg_device,
+                },
+
+                "media": {
+                    "generation": (
+                        status.get("density")
+                    ),
+                    "online": bool(
+                        status.get("online")
+                    ),
+                    "available": bool(
+                        status.get("available")
+                    ),
+                },
+
+                "existing_ltfs": (
+                    {
+                        "label": info.get(
+                            "label"
+                        ),
+                        "uuid": info.get(
+                            "uuid"
+                        ),
+                        "barcode": info.get(
+                            "barcode"
+                        ),
+                        "format_version": info.get(
+                            "format_version"
+                        ),
+                        "capacity_bytes": info.get(
+                            "capacity_bytes"
+                        ),
+                        "used_bytes": info.get(
+                            "used_bytes"
+                        ),
+                        "free_bytes": info.get(
+                            "free_bytes"
+                        ),
+                        "cataloged": bool(
+                            existing_tape
+                        ),
+                        "catalog_tape": (
+                            existing_tape
+                        ),
+                    }
+                    if ltfs_detected
+                    else None
+                ),
+
+                #
+                # Keep the failed read-only LTFS mount
+                # information available for diagnostics,
+                # but do not mistake it for a format error.
+                #
+                "inspection_error": (
+                    None
+                    if ltfs_detected
+                    else info.get("error")
+                ),
+            }
+        )
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_owner
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+
+
+@app.route(
+    "/api/tapes/inspect-existing",
+    methods=["POST"],
+)
+def inspect_existing_tape_api():
+    """
+    Inspect an inserted LTFS cartridge without modifying it.
+
+    The tape drive is reserved only for the duration of the
+    read-only LTFS inspection. inspect_ltfs() unmounts the
+    cartridge before returning.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    operation_owner = (
+        "catalog_inspect_existing"
+    )
+
+    #
+    # Reserve the physical drive before discovery/mounting.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "currently active."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_owner
+        )
+
+    try:
+        drives = discover_drives()
+
+        if not drives:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "No tape drive detected."
+                    ),
+                }
+            ), 404
+
+        drive = drives[0]
+
+        nst_device = drive.get(
+            "nst_device"
+        )
+
+        sg_device = drive.get(
+            "sg_device"
+        )
+
+        if not nst_device or not sg_device:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape drive devices could "
+                        "not be resolved."
+                    ),
+                }
+            ), 500
+
+        status = get_tape_status(
+            nst_device
+        )
+
+        if not (
+            status.get("available")
+            and status.get("online")
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape cartridge is not online."
+                    ),
+                }
+            ), 409
+
+        #
+        # READ ONLY.
+        #
+        # inspect_ltfs() mounts the cartridge read-only,
+        # reads its identity/capacity, and unmounts it
+        # before returning.
+        #
+        info = inspect_ltfs(
+            sg_device=sg_device,
+        )
+
+        if not info.get("ltfs"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        info.get("error")
+                        or (
+                            "Inserted cartridge could "
+                            "not be identified as LTFS."
+                        )
+                    ),
+                }
+            ), 400
+
+        #
+        # Do not continue if inspection succeeded but the
+        # temporary LTFS filesystem failed to unmount.
+        #
+        if info.get("mounted"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "LTFS inspection did not "
+                        "cleanly unmount."
+                    ),
+                }
+            ), 500
+
+        if info.get("error"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": info["error"],
+                }
+            ), 500
+
+        ltfs_uuid = info.get("uuid")
+
+        if not ltfs_uuid:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "LTFS cartridge UUID could "
+                        "not be read."
+                    ),
+                }
+            ), 400
+
+        existing = get_tape_by_uuid(
+            ltfs_uuid
+        )
+
+        tape_data = None
+
+        if existing:
+            tape_data = dict(existing)
+
+        return jsonify(
+            {
+                "success": True,
+                "registered": bool(existing),
+                "existing_tape": tape_data,
+                "cartridge": {
+                    "label": info.get("label"),
+                    "uuid": ltfs_uuid,
+                    "volume_serial": (
+                        info.get("volume_serial")
+                    ),
+                    "barcode": info.get(
+                        "barcode"
+                    ),
+                    "format_version": (
+                        info.get("format_version")
+                    ),
+                    "capacity_bytes": (
+                        info.get("capacity_bytes")
+                    ),
+                    "used_bytes": (
+                        info.get("used_bytes")
+                    ),
+                    "free_bytes": (
+                        info.get("free_bytes")
+                    ),
+                    "generation": (
+                        status.get("density")
+                    ),
+                },
+                "drive": {
+                    "description": (
+                        drive.get("description")
+                        or drive.get("name")
+                        or "Tape Drive"
+                    ),
+                    "nst_device": nst_device,
+                    "sg_device": sg_device,
+                    "density": status.get(
+                        "density"
+                    ),
+                },
+            }
+        )
+
+    finally:
+        #
+        # inspect_ltfs() is a temporary inspection.
+        # Unlike Tape Inspector, ownership is never retained.
+        #
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_owner
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+
+
 @app.route("/inspector")
 def tape_inspector_page():
     return render_template(
@@ -3219,6 +4329,104 @@ def inspector_browse_api():
         result["density"] = "-"
 
     return jsonify(result)
+
+
+@app.route(
+    "/api/inspector/unmount",
+    methods=["POST"],
+)
+def inspector_unmount_api():
+    global ACTIVE_TAPE_OPERATION_ID
+
+    with OPERATION_STATE_LOCK:
+        active_operation = (
+            ACTIVE_TAPE_OPERATION_ID
+        )
+
+    if active_operation not in {
+        None,
+        "inspector",
+    }:
+        return jsonify(
+            {
+                "success": False,
+                "busy": True,
+                "error": (
+                    "A tape operation is currently "
+                    "active. Wait for it to finish "
+                    "before unmounting."
+                ),
+            }
+        ), 409
+
+    mount_path = Path(
+        "/mnt/tapebox/ltfs-inspect"
+    )
+
+    #
+    # If Inspector is already unmounted, make this
+    # idempotent and simply release stale ownership.
+    #
+    if not _is_mounted(mount_path):
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == "inspector"
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+        return jsonify(
+            {
+                "success": True,
+                "unmounted": True,
+                "ejected": False,
+                "already_unmounted": True,
+                "message": (
+                    "LTFS is already unmounted. "
+                    "Cartridge remains loaded."
+                ),
+            }
+        )
+
+    success, error = _unmount_ltfs(
+        mount_path
+    )
+
+    if not success:
+        return jsonify(
+            {
+                "success": False,
+                "unmounted": False,
+                "ejected": False,
+                "error": (
+                    "LTFS could not be cleanly unmounted. "
+                    + str(error)
+                ),
+            }
+        ), 500
+
+    #
+    # LTFS released the drive successfully.
+    #
+    with OPERATION_STATE_LOCK:
+        if (
+            ACTIVE_TAPE_OPERATION_ID
+            == "inspector"
+        ):
+            ACTIVE_TAPE_OPERATION_ID = None
+
+    return jsonify(
+        {
+            "success": True,
+            "unmounted": True,
+            "ejected": False,
+            "message": (
+                "LTFS unmounted cleanly. "
+                "Cartridge remains loaded in the drive."
+            ),
+        }
+    )
+
 
 
 @app.route(

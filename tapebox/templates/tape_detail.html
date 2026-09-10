@@ -109,6 +109,79 @@
 
     <div class="card-header">
         <div>
+            <h2>Cartridge Catalog</h2>
+            <p>
+                Human-readable TapeBox information.
+                This does not modify the LTFS cartridge.
+            </p>
+        </div>
+    </div>
+
+    {% if request.args.get("saved") %}
+    <div class="status-message success">
+        Cartridge information saved.
+    </div>
+    {% endif %}
+
+    <form
+        method="post"
+        action="{{ url_for('update_tape_metadata_action', tape_id=tape['id']) }}"
+    >
+
+        <div class="info-grid">
+
+            <div class="info-row">
+                <span>Friendly Name</span>
+
+                <input
+                    type="text"
+                    name="friendly_name"
+                    value="{{ tape['friendly_name'] or '' }}"
+                    placeholder="Example: Family Photos 2010-2015"
+                >
+            </div>
+
+            <div class="info-row">
+                <span>Location</span>
+
+                <input
+                    type="text"
+                    name="location"
+                    value="{{ tape['location'] or '' }}"
+                    placeholder="Example: Shelf A / Case 2"
+                >
+            </div>
+
+            <div class="info-row">
+                <span>Notes</span>
+
+                <textarea
+                    name="notes"
+                    rows="4"
+                    placeholder="Optional cartridge notes"
+                >{{ tape["notes"] or "" }}</textarea>
+            </div>
+
+        </div>
+
+        <div style="margin-top: 18px;">
+            <button
+                type="submit"
+                class="action-button"
+            >
+                Save Cartridge Info
+            </button>
+        </div>
+
+    </form>
+
+</section>
+
+
+<section class="card section-gap">
+
+    <div class="card-header">
+        <div>
             <h2>Files on Cartridge</h2>
             <p>Normal files stored directly on this tape</p>
         </div>
