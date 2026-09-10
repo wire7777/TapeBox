@@ -1652,11 +1652,101 @@ def staging_upload_api():
 #
 # Archive Planner
 #
-# LTO-6 native capacity is 2.5 TB. TapeBox intentionally
-# plans conservatively so archives are not packed all the
-# way to the physical/format limit.
+# Conservative usable capacities by LTO generation.
 #
-ARCHIVE_PLANNER_TAPE_CAPACITY_BYTES = 2_400_000_000_000
+# These deliberately leave some headroom instead of
+# planning all the way to the nominal native capacity.
+#
+ARCHIVE_PLANNER_CAPACITY_BYTES = {
+    5: 1_400_000_000_000,
+    6: 2_400_000_000_000,
+    7: 5_800_000_000_000,
+    8: 11_500_000_000_000,
+    9: 17_500_000_000_000,
+}
+
+ARCHIVE_PLANNER_DEFAULT_GENERATION = 6
+
+
+def _normalize_lto_generation(value):
+    """
+    Convert values such as 6, "6", and "LTO-6" to 6.
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip().upper()
+
+    if text.startswith("LTO-"):
+        text = text[4:]
+
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _planner_media():
+    """
+    Determine which LTO generation the planner should use.
+
+    Prefer the currently loaded cartridge. If no usable
+    generation can be detected, fall back to LTO-6.
+    """
+    generation = None
+    source = "default"
+
+    try:
+        drives = discover_drives()
+
+        if drives:
+            nst_device = drives[0].get(
+                "nst_device"
+            )
+
+            if nst_device:
+                status = get_tape_status(
+                    nst_device
+                )
+
+                if (
+                    status.get("available")
+                    and status.get("online")
+                ):
+                    generation = (
+                        _normalize_lto_generation(
+                            status.get("density")
+                        )
+                    )
+
+                    if (
+                        generation
+                        in ARCHIVE_PLANNER_CAPACITY_BYTES
+                    ):
+                        source = "loaded_cartridge"
+
+    except Exception:
+        generation = None
+
+    if (
+        generation
+        not in ARCHIVE_PLANNER_CAPACITY_BYTES
+    ):
+        generation = (
+            ARCHIVE_PLANNER_DEFAULT_GENERATION
+        )
+        source = "default"
+
+    return {
+        "generation": generation,
+        "generation_name": f"LTO-{generation}",
+        "capacity_bytes": (
+            ARCHIVE_PLANNER_CAPACITY_BYTES[
+                generation
+            ]
+        ),
+        "source": source,
+    }
 
 
 def _collect_planner_files(path):
@@ -1694,7 +1784,10 @@ def _collect_planner_files(path):
     return files
 
 
-def _build_archive_plan(paths):
+def _build_archive_plan(
+    paths,
+    generation=None,
+):
     """
     Simulate TapeBox media usage.
 
@@ -1703,7 +1796,32 @@ def _build_archive_plan(paths):
     to span cartridges.
     """
 
-    capacity = ARCHIVE_PLANNER_TAPE_CAPACITY_BYTES
+    media = _planner_media()
+
+    requested_generation = (
+        _normalize_lto_generation(
+            generation
+        )
+    )
+
+    if (
+        requested_generation
+        in ARCHIVE_PLANNER_CAPACITY_BYTES
+    ):
+        media = {
+            "generation": requested_generation,
+            "generation_name": (
+                f"LTO-{requested_generation}"
+            ),
+            "capacity_bytes": (
+                ARCHIVE_PLANNER_CAPACITY_BYTES[
+                    requested_generation
+                ]
+            ),
+            "source": "requested",
+        }
+
+    capacity = media["capacity_bytes"]
 
     files = []
 
@@ -1842,6 +1960,9 @@ def _build_archive_plan(paths):
         final_free = capacity
 
     return {
+        "generation": media["generation"],
+        "generation_name": media["generation_name"],
+        "media_source": media["source"],
         "capacity_bytes": capacity,
         "capacity_tb": capacity / 1_000_000_000_000,
         "file_count": len(file_entries),

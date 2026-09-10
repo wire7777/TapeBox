@@ -927,8 +927,12 @@ window.monitorTapeBoxArchiveOperation =
             ? "Yes"
             : "No";
 
+        const generationName =
+            plan.generation_name
+            || "LTO";
+
         planStatus.textContent =
-            `${plan.tape_count} LTO-6 ${tapeWord} estimated`;
+            `${plan.tape_count} ${generationName} ${tapeWord} estimated`;
 
         planDetails.style.display =
             "block";
