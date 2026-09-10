@@ -858,6 +858,103 @@ def register_existing_ltfs_tape(
 
 
 
+def _refresh_tape_used_bytes(db, tape_id):
+    """
+    Recalculate physical cataloged bytes stored on one tape.
+
+    Normal files store their physical location in files.tape_id.
+
+    Spanned files have files.tape_id = NULL and their physical
+    tape usage is stored in file_parts.
+    """
+
+    if tape_id is None:
+        return 0
+
+    row = db.execute(
+        """
+        SELECT
+            COALESCE(
+                (
+                    SELECT SUM(size_bytes)
+                    FROM files
+                    WHERE tape_id = ?
+                ),
+                0
+            )
+            +
+            COALESCE(
+                (
+                    SELECT SUM(size_bytes)
+                    FROM file_parts
+                    WHERE tape_id = ?
+                ),
+                0
+            ) AS used_bytes
+        """,
+        (
+            tape_id,
+            tape_id,
+        ),
+    ).fetchone()
+
+    used_bytes = int(row["used_bytes"] or 0)
+
+    db.execute(
+        """
+        UPDATE tapes
+        SET used_bytes = ?
+        WHERE id = ?
+        """,
+        (
+            used_bytes,
+            tape_id,
+        ),
+    )
+
+    return used_bytes
+
+
+def refresh_tape_used_bytes(tape_id):
+    """
+    Rebuild catalog usage for one registered tape.
+    """
+
+    with connect() as db:
+        return _refresh_tape_used_bytes(
+            db,
+            tape_id,
+        )
+
+
+def refresh_all_tape_used_bytes():
+    """
+    Rebuild catalog usage for every registered tape.
+    """
+
+    with connect() as db:
+        tape_ids = [
+            row["id"]
+            for row in db.execute(
+                """
+                SELECT id
+                FROM tapes
+                ORDER BY id
+                """
+            ).fetchall()
+        ]
+
+        result = {}
+
+        for tape_id in tape_ids:
+            result[tape_id] = _refresh_tape_used_bytes(
+                db,
+                tape_id,
+            )
+
+        return result
+
+
 def record_archived_file(
     original_path,
     relative_path,
@@ -902,7 +999,14 @@ def record_archived_file(
             ),
         )
 
-        return cursor.lastrowid
+        file_id = cursor.lastrowid
+
+        _refresh_tape_used_bytes(
+            db,
+            tape_id,
+        )
+
+        return file_id
 
 
 
@@ -2542,6 +2646,11 @@ def record_spanned_file_part(
                 part_size_bytes,
                 part_sha256,
             ),
+        )
+
+        _refresh_tape_used_bytes(
+            db,
+            tape_id,
         )
 
         return file_id
