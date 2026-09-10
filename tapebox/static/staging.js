@@ -534,9 +534,14 @@ window.monitorTapeBoxArchiveOperation =
 
 
 //
-// Web upload into the current staging folder.
+// Resumable web upload into the current staging folder.
 //
 (function () {
+    const CHUNK_SIZE =
+        64 * 1024 * 1024;
+
+    const MAX_RETRIES = 3;
+
     const zone =
         document.getElementById(
             "staging-upload-zone"
@@ -547,9 +552,19 @@ window.monitorTapeBoxArchiveOperation =
             "staging-upload-browse"
         );
 
+    const folderBrowse =
+        document.getElementById(
+            "staging-upload-folder-browse"
+        );
+
     const input =
         document.getElementById(
             "staging-upload-input"
+        );
+
+    const folderInput =
+        document.getElementById(
+            "staging-upload-folder-input"
         );
 
     const status =
@@ -575,205 +590,710 @@ window.monitorTapeBoxArchiveOperation =
     if (
         !zone ||
         !browse ||
-        !input
+        !folderBrowse ||
+        !input ||
+        !folderInput
     ) {
         return;
     }
 
-    function uploadFiles(files) {
-        const selected =
-            Array.from(files || []);
 
-        if (!selected.length) {
+    let uploadActive = false;
+
+
+    function formatUploadBytes(bytes) {
+        let value =
+            Number(bytes || 0);
+
+        const units = [
+            "B",
+            "KB",
+            "MB",
+            "GB",
+            "TB",
+            "PB"
+        ];
+
+        let unit = 0;
+
+        while (
+            value >= 1000
+            && unit < units.length - 1
+        ) {
+            value /= 1000;
+            unit++;
+        }
+
+        return (
+            value.toFixed(
+                unit === 0 ? 0 : 2
+            )
+            + " "
+            + units[unit]
+        );
+    }
+
+
+    function stagingPathForFile(file) {
+        const current =
+            String(
+                window.TAPEBOX_STAGING_PATH
+                || ""
+            )
+            .replace(/\\/g, "/")
+            .replace(/^\/+|\/+$/g, "");
+
+        //
+        // Folder selections provide webkitRelativePath:
+        //
+        //   Vacation/Day1/clip.mov
+        //
+        // Ordinary file selections fall back to file.name.
+        //
+        const relative =
+            String(
+                file.webkitRelativePath
+                || file.name
+                || ""
+            )
+            .replace(/\\/g, "/")
+            .replace(/^\/+|\/+$/g, "");
+
+        if (!relative) {
+            throw new Error(
+                "Invalid upload filename."
+            );
+        }
+
+        if (!current) {
+            return relative;
+        }
+
+        return `${current}/${relative}`;
+    }
+
+
+    function setProgress(
+        received,
+        total
+    ) {
+        const safeTotal =
+            Number(total || 0);
+
+        const safeReceived =
+            Math.min(
+                Number(received || 0),
+                safeTotal
+            );
+
+        const percent =
+            safeTotal > 0
+                ? (
+                    safeReceived
+                    / safeTotal
+                ) * 100
+                : 100;
+
+        if (progressBar) {
+            progressBar.style.width =
+                `${percent}%`;
+        }
+
+        if (progressText) {
+            progressText.textContent =
+                `${percent.toFixed(1)}% — ${
+                    formatUploadBytes(
+                        safeReceived
+                    )
+                } / ${
+                    formatUploadBytes(
+                        safeTotal
+                    )
+                }`;
+        }
+    }
+
+
+    async function responseJson(
+        response
+    ) {
+        try {
+            return await response.json();
+        } catch (error) {
+            return null;
+        }
+    }
+
+
+    async function sha256Blob(blob) {
+        //
+        // Web Crypto is normally unavailable when TapeBox is
+        // opened from another machine over plain HTTP.
+        //
+        // In that case the server still hashes every received
+        // chunk and performs a whole-file SHA-256 at completion.
+        //
+        if (
+            !window.crypto
+            || !window.crypto.subtle
+        ) {
+            return null;
+        }
+
+        const buffer =
+            await blob.arrayBuffer();
+
+        const digest =
+            await window.crypto.subtle.digest(
+                "SHA-256",
+                buffer
+            );
+
+        return Array.from(
+            new Uint8Array(digest)
+        )
+            .map(
+                value =>
+                    value
+                    .toString(16)
+                    .padStart(2, "0")
+            )
+            .join("");
+    }
+
+
+    async function createUpload(file) {
+        const response =
+            await fetch(
+                "/api/staging/uploads/create",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+                    body: JSON.stringify({
+                        path:
+                            stagingPathForFile(
+                                file
+                            ),
+                        size: file.size
+                    })
+                }
+            );
+
+        const data =
+            await responseJson(
+                response
+            );
+
+        if (
+            !response.ok
+            || !data
+            || !data.success
+        ) {
+            throw new Error(
+                data && data.error
+                    ? data.error
+                    : "Could not create upload."
+            );
+        }
+
+        return data;
+    }
+
+
+    async function sendChunk(
+        uploadId,
+        offset,
+        chunk,
+        chunkHash
+    ) {
+        let lastError = null;
+
+        for (
+            let attempt = 1;
+            attempt <= MAX_RETRIES;
+            attempt++
+        ) {
+            try {
+                const response =
+                    await fetch(
+                        `/api/staging/uploads/${
+                            uploadId
+                        }/chunk`,
+                        {
+                            method: "POST",
+                            headers: {
+                                "X-TapeBox-Offset":
+                                    String(offset),
+
+                                ...(
+                                    chunkHash
+                                        ? {
+                                            "X-TapeBox-Chunk-SHA256":
+                                                chunkHash
+                                        }
+                                        : {}
+                                ),
+
+                                "Content-Type":
+                                    "application/octet-stream"
+                            },
+                            body: chunk
+                        }
+                    );
+
+                const data =
+                    await responseJson(
+                        response
+                    );
+
+                //
+                // This can happen if the server committed
+                // a chunk but the browser lost the response.
+                //
+                if (
+                    response.status === 409
+                    && data
+                    && Number.isFinite(
+                        Number(
+                            data.expected_offset
+                        )
+                    )
+                ) {
+                    return {
+                        expectedOffset:
+                            Number(
+                                data.expected_offset
+                            )
+                    };
+                }
+
+                if (
+                    !response.ok
+                    || !data
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data && data.error
+                            ? data.error
+                            : "Chunk upload failed."
+                    );
+                }
+
+                return {
+                    bytesReceived:
+                        Number(
+                            data.bytes_received
+                        )
+                };
+
+            } catch (error) {
+                lastError = error;
+
+                if (
+                    attempt < MAX_RETRIES
+                ) {
+                    await new Promise(
+                        resolve =>
+                            window.setTimeout(
+                                resolve,
+                                1000 * attempt
+                            )
+                    );
+                }
+            }
+        }
+
+        throw (
+            lastError
+            || new Error(
+                "Chunk upload failed."
+            )
+        );
+    }
+
+
+    async function completeUpload(
+        uploadId
+    ) {
+        const response =
+            await fetch(
+                `/api/staging/uploads/${
+                    uploadId
+                }/complete`,
+                {
+                    method: "POST"
+                }
+            );
+
+        const data =
+            await responseJson(
+                response
+            );
+
+        if (
+            !response.ok
+            || !data
+            || !data.success
+        ) {
+            throw new Error(
+                data && data.error
+                    ? data.error
+                    : "Could not finalize upload."
+            );
+        }
+
+        return data;
+    }
+
+
+    async function uploadOneFile(
+        file,
+        fileNumber,
+        fileCount,
+        completedBytes,
+        totalBytes
+    ) {
+        if (message) {
+            message.textContent =
+                `Preparing ${fileNumber} of ${
+                    fileCount
+                }: ${file.name}`;
+        }
+
+        const created =
+            await createUpload(file);
+
+        const upload =
+            created.upload || {};
+
+        const uploadId =
+            upload.upload_id;
+
+        if (!uploadId) {
+            throw new Error(
+                "Server did not return an upload ID."
+            );
+        }
+
+        let offset =
+            Number(
+                upload.bytes_received || 0
+            );
+
+        if (
+            offset < 0
+            || offset > file.size
+        ) {
+            throw new Error(
+                "Server returned an invalid resume offset."
+            );
+        }
+
+        if (
+            created.resumed
+            && message
+        ) {
+            message.textContent =
+                `Resuming ${fileNumber} of ${
+                    fileCount
+                }: ${file.name} at ${
+                    formatUploadBytes(
+                        offset
+                    )
+                }`;
+        }
+
+        setProgress(
+            completedBytes + offset,
+            totalBytes
+        );
+
+        while (
+            offset < file.size
+        ) {
+            const end =
+                Math.min(
+                    offset + CHUNK_SIZE,
+                    file.size
+                );
+
+            const chunk =
+                file.slice(
+                    offset,
+                    end
+                );
+
+            if (message) {
+                message.textContent =
+                    `Uploading ${fileNumber} of ${
+                        fileCount
+                    }: ${file.name}`;
+            }
+
+            const chunkHash =
+                await sha256Blob(
+                    chunk
+                );
+
+            const result =
+                await sendChunk(
+                    uploadId,
+                    offset,
+                    chunk,
+                    chunkHash
+                );
+
+            if (
+                result.expectedOffset
+                !== undefined
+            ) {
+                const expected =
+                    Number(
+                        result.expectedOffset
+                    );
+
+                if (
+                    expected < 0
+                    || expected > file.size
+                ) {
+                    throw new Error(
+                        "Server returned an invalid recovery offset."
+                    );
+                }
+
+                offset = expected;
+
+                setProgress(
+                    completedBytes
+                        + offset,
+                    totalBytes
+                );
+
+                continue;
+            }
+
+            offset =
+                Number(
+                    result.bytesReceived
+                );
+
+            setProgress(
+                completedBytes + offset,
+                totalBytes
+            );
+        }
+
+        if (message) {
+            message.textContent =
+                `Verifying ${file.name}...`;
+        }
+
+        return await completeUpload(
+            uploadId
+        );
+    }
+
+
+    async function uploadFiles(files) {
+        const selected =
+            Array.from(
+                files || []
+            );
+
+        if (
+            !selected.length
+            || uploadActive
+        ) {
             return;
         }
 
-        const form =
-            new FormData();
+        uploadActive = true;
 
-        form.append(
-            "path",
-            window.TAPEBOX_STAGING_PATH || ""
-        );
-
-        selected.forEach((file) => {
-            form.append(
-                "files",
-                file,
-                file.name
+        const totalBytes =
+            selected.reduce(
+                (
+                    total,
+                    file
+                ) =>
+                    total
+                    + Number(
+                        file.size || 0
+                    ),
+                0
             );
-        });
+
+        let completedBytes = 0;
 
         if (status) {
             status.style.display =
                 "block";
         }
 
-        if (message) {
-            message.textContent =
-                `Uploading ${selected.length} file${
-                    selected.length === 1
-                        ? ""
-                        : "s"
-                }...`;
-        }
-
-        if (progressBar) {
-            progressBar.style.width =
-                "0%";
-        }
-
-        if (progressText) {
-            progressText.textContent =
-                "0.0%";
-        }
+        setProgress(
+            0,
+            totalBytes
+        );
 
         browse.disabled = true;
+        folderBrowse.disabled = true;
         input.disabled = true;
+        folderInput.disabled = true;
 
-        const xhr =
-            new XMLHttpRequest();
+        try {
+            for (
+                let index = 0;
+                index < selected.length;
+                index++
+            ) {
+                const file =
+                    selected[index];
 
-        xhr.open(
-            "POST",
-            "/api/staging/upload"
-        );
+                await uploadOneFile(
+                    file,
+                    index + 1,
+                    selected.length,
+                    completedBytes,
+                    totalBytes
+                );
 
-        xhr.upload.addEventListener(
-            "progress",
-            (event) => {
-                if (!event.lengthComputable) {
-                    return;
-                }
-
-                const percent =
-                    Math.min(
-                        100,
-                        (
-                            event.loaded
-                            / event.total
-                        ) * 100
+                completedBytes +=
+                    Number(
+                        file.size || 0
                     );
 
-                if (progressBar) {
-                    progressBar.style.width =
-                        `${percent}%`;
-                }
-
-                if (progressText) {
-                    progressText.textContent =
-                        `${percent.toFixed(1)}% — ${
-                            formatBytes(
-                                event.loaded
-                            )
-                        } / ${
-                            formatBytes(
-                                event.total
-                            )
-                        }`;
-                }
+                setProgress(
+                    completedBytes,
+                    totalBytes
+                );
             }
-        );
 
-        xhr.addEventListener(
-            "load",
-            () => {
-                browse.disabled = false;
-                input.disabled = false;
+            if (progressBar) {
+                progressBar.style.width =
+                    "100%";
+            }
 
-                let data = null;
-
-                try {
-                    data = JSON.parse(
-                        xhr.responseText
-                    );
-                } catch (error) {
-                    data = null;
-                }
-
-                if (
-                    xhr.status >= 200 &&
-                    xhr.status < 300 &&
-                    data &&
-                    data.success
-                ) {
-                    if (progressBar) {
-                        progressBar.style.width =
-                            "100%";
-                    }
-
-                    if (progressText) {
-                        progressText.textContent =
-                            "100.0%";
-                    }
-
-                    if (message) {
-                        message.textContent =
-                            `Upload complete — ${
-                                data.count
-                            } file${
-                                data.count === 1
-                                    ? ""
-                                    : "s"
-                            }.`;
-                    }
-
-                    window.setTimeout(
-                        () => {
-                            window.location.reload();
-                        },
-                        700
-                    );
-
-                    return;
-                }
-
-                if (message) {
-                    message.textContent =
-                        (
-                            data &&
-                            data.error
+            if (progressText) {
+                progressText.textContent =
+                    `100.0% — ${
+                        formatUploadBytes(
+                            totalBytes
                         )
-                            ? `Upload failed: ${data.error}`
-                            : "Upload failed.";
-                }
+                    } / ${
+                        formatUploadBytes(
+                            totalBytes
+                        )
+                    }`;
             }
-        );
 
-        xhr.addEventListener(
-            "error",
-            () => {
-                browse.disabled = false;
-                input.disabled = false;
-
-                if (message) {
-                    message.textContent =
-                        "Upload failed: network error.";
-                }
+            if (message) {
+                message.textContent =
+                    `Upload complete — ${
+                        selected.length
+                    } file${
+                        selected.length === 1
+                            ? ""
+                            : "s"
+                    } verified.`;
             }
-        );
 
-        xhr.send(form);
+            window.setTimeout(
+                () => {
+                    window.location.reload();
+                },
+                900
+            );
+
+        } catch (error) {
+            if (message) {
+                message.textContent =
+                    `Upload paused: ${
+                        error.message
+                        || "Unknown error."
+                    } Re-select the same file to resume.`;
+            }
+
+            browse.disabled = false;
+            folderBrowse.disabled = false;
+            input.disabled = false;
+            folderInput.disabled = false;
+            input.value = "";
+            folderInput.value = "";
+            uploadActive = false;
+        }
     }
+
 
     browse.addEventListener(
         "click",
         (event) => {
             event.stopPropagation();
-            input.click();
-        }
-    );
 
-    zone.addEventListener(
-        "click",
-        (event) => {
-            if (
-                event.target !== browse
-            ) {
+            if (!uploadActive) {
                 input.click();
             }
         }
     );
+
+
+    folderBrowse.addEventListener(
+        "click",
+        (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (uploadActive) {
+                return;
+            }
+
+            //
+            // Explicitly force directory-selection mode.
+            // Chrome/Edge expose this as webkitdirectory.
+            //
+            folderInput.setAttribute(
+                "webkitdirectory",
+                ""
+            );
+
+            folderInput.webkitdirectory = true;
+
+            if (
+                typeof folderInput.showPicker
+                === "function"
+            ) {
+                folderInput.showPicker();
+            } else {
+                folderInput.click();
+            }
+        }
+    );
+
+
+    zone.addEventListener(
+        "click",
+        (event) => {
+            if (uploadActive) {
+                return;
+            }
+
+            //
+            // Buttons and inputs inside the drop zone manage
+            // their own picker behavior.
+            //
+            if (
+                event.target.closest(
+                    "button, input"
+                )
+            ) {
+                return;
+            }
+
+            input.click();
+        }
+    );
+
 
     input.addEventListener(
         "change",
@@ -784,6 +1304,17 @@ window.monitorTapeBoxArchiveOperation =
         }
     );
 
+
+    folderInput.addEventListener(
+        "change",
+        () => {
+            uploadFiles(
+                folderInput.files
+            );
+        }
+    );
+
+
     zone.addEventListener(
         "dragover",
         (event) => {
@@ -791,17 +1322,21 @@ window.monitorTapeBoxArchiveOperation =
         }
     );
 
+
     zone.addEventListener(
         "drop",
         (event) => {
             event.preventDefault();
 
-            uploadFiles(
-                event.dataTransfer.files
-            );
+            if (!uploadActive) {
+                uploadFiles(
+                    event.dataTransfer.files
+                );
+            }
         }
     );
 })();
+
 
 
 /*

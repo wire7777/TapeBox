@@ -125,9 +125,27 @@
             Browse Files
         </button>
 
+        <button
+            type="button"
+            class="action-button"
+            id="staging-upload-folder-browse"
+            style="margin-left: 8px;"
+        >
+            Browse Folder
+        </button>
+
         <input
             type="file"
             id="staging-upload-input"
+            multiple
+            style="display: none;"
+        >
+
+        <input
+            type="file"
+            id="staging-upload-folder-input"
+            webkitdirectory
+            directory
             multiple
             style="display: none;"
         >

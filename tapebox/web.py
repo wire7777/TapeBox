@@ -1432,6 +1432,16 @@ def staging_page():
             ),
         ):
             #
+            # TapeBox internal resumable-upload state must never
+            # appear as ordinary staging content.
+            #
+            if (
+                target == root
+                and entry.name == ".uploads"
+            ):
+                continue
+
+            #
             # Do not follow symlinks out of staging.
             #
             if entry.is_symlink():
@@ -1647,6 +1657,633 @@ def staging_upload_api():
         "uploaded": uploaded,
         "count": len(uploaded),
     })
+
+
+
+#
+# Resumable browser uploads.
+#
+# Upload state deliberately lives in the staging filesystem rather
+# than the TapeBox SQLite catalog.
+#
+
+def _upload_state_root():
+    initialize_default_settings()
+
+    root, _ = _resolve_staging_path("")
+    state_root = root / ".uploads"
+
+    state_root.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return root, state_root
+
+
+def _safe_upload_relative_path(value):
+    value = str(value or "").replace("\\", "/").strip("/")
+
+    if not value:
+        raise ValueError("Upload path is required.")
+
+    relative = Path(value)
+
+    if relative.is_absolute():
+        raise ValueError("Upload path must be relative.")
+
+    if any(
+        part in ("", ".", "..")
+        for part in relative.parts
+    ):
+        raise ValueError("Invalid upload path.")
+
+    return relative
+
+
+def _upload_session_paths(upload_id):
+    import re
+
+    upload_id = str(upload_id or "").strip()
+
+    if not re.fullmatch(r"[0-9a-f]{32}", upload_id):
+        raise ValueError("Invalid upload ID.")
+
+    root, state_root = _upload_state_root()
+
+    session_dir = state_root / upload_id
+    metadata_path = session_dir / "upload.json"
+    part_path = session_dir / "data.part"
+
+    return (
+        root,
+        session_dir,
+        metadata_path,
+        part_path,
+    )
+
+
+def _write_upload_metadata(metadata_path, data):
+    import json
+    import os
+
+    temp_path = metadata_path.with_suffix(
+        ".json.tmp"
+    )
+
+    with open(
+        temp_path,
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        json.dump(
+            data,
+            handle,
+            indent=2,
+            sort_keys=True,
+        )
+
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    temp_path.replace(metadata_path)
+
+
+def _load_upload_metadata(upload_id):
+    import json
+
+    (
+        root,
+        session_dir,
+        metadata_path,
+        part_path,
+    ) = _upload_session_paths(upload_id)
+
+    if not metadata_path.exists():
+        raise ValueError(
+            "Upload session was not found."
+        )
+
+    with open(
+        metadata_path,
+        "r",
+        encoding="utf-8",
+    ) as handle:
+        data = json.load(handle)
+
+    expected = int(
+        data.get("bytes_received", 0)
+    )
+
+    actual = (
+        part_path.stat().st_size
+        if part_path.exists()
+        else 0
+    )
+
+    #
+    # Metadata is committed only after the chunk data has been
+    # flushed. If a crash happens between those two operations,
+    # the .part file can be slightly ahead of upload.json.
+    # Roll it back to the last committed byte boundary.
+    #
+    if actual > expected:
+        with open(part_path, "r+b") as handle:
+            handle.truncate(expected)
+
+    if actual < expected:
+        raise RuntimeError(
+            "Upload data is shorter than its saved "
+            "recovery state."
+        )
+
+    return (
+        root,
+        session_dir,
+        metadata_path,
+        part_path,
+        data,
+    )
+
+
+
+def _find_resumable_upload(
+    state_root,
+    relative_path,
+    total_size,
+):
+    import json
+
+    relative_text = relative_path.as_posix()
+
+    try:
+        session_dirs = list(
+            state_root.iterdir()
+        )
+    except OSError:
+        return None
+
+    for session_dir in session_dirs:
+        if not session_dir.is_dir():
+            continue
+
+        metadata_path = (
+            session_dir / "upload.json"
+        )
+
+        part_path = (
+            session_dir / "data.part"
+        )
+
+        if not metadata_path.is_file():
+            continue
+
+        try:
+            with open(
+                metadata_path,
+                "r",
+                encoding="utf-8",
+            ) as handle:
+                metadata = json.load(handle)
+
+            if (
+                metadata.get("status")
+                != "uploading"
+            ):
+                continue
+
+            if (
+                metadata.get("relative_path")
+                != relative_text
+            ):
+                continue
+
+            if (
+                int(metadata.get("size", -1))
+                != total_size
+            ):
+                continue
+
+            expected = int(
+                metadata.get(
+                    "bytes_received",
+                    0,
+                )
+            )
+
+            actual = (
+                part_path.stat().st_size
+                if part_path.exists()
+                else 0
+            )
+
+            #
+            # Crash recovery:
+            # data may have reached disk before upload.json.
+            #
+            if actual > expected:
+                with open(
+                    part_path,
+                    "r+b",
+                ) as handle:
+                    handle.truncate(expected)
+
+            if actual < expected:
+                continue
+
+            return metadata
+
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+        ):
+            continue
+
+    return None
+
+
+@app.route(
+    "/api/staging/uploads/create",
+    methods=["POST"],
+)
+def staging_resumable_create_api():
+    import time
+    import uuid
+
+    data = request.get_json(silent=True) or {}
+
+    relative_path = _safe_upload_relative_path(
+        data.get("path")
+    )
+
+    try:
+        total_size = int(
+            data.get("size")
+        )
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "error": "Invalid file size.",
+        }), 400
+
+    if total_size < 0:
+        return jsonify({
+            "success": False,
+            "error": "Invalid file size.",
+        }), 400
+
+    root, state_root = _upload_state_root()
+
+    destination = (
+        root / relative_path
+    ).resolve()
+
+    try:
+        destination.relative_to(root)
+    except ValueError:
+        return jsonify({
+            "success": False,
+            "error": (
+                "Upload destination is outside "
+                "the staging area."
+            ),
+        }), 400
+
+    if destination.exists():
+        return jsonify({
+            "success": False,
+            "error": (
+                f"{relative_path.as_posix()} "
+                "already exists in staging."
+            ),
+        }), 409
+
+    existing = _find_resumable_upload(
+        state_root,
+        relative_path,
+        total_size,
+    )
+
+    if existing is not None:
+        return jsonify({
+            "success": True,
+            "resumed": True,
+            "upload": existing,
+        })
+
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    upload_id = uuid.uuid4().hex
+    session_dir = state_root / upload_id
+
+    session_dir.mkdir(
+        parents=False,
+        exist_ok=False,
+    )
+
+    metadata_path = (
+        session_dir / "upload.json"
+    )
+
+    part_path = (
+        session_dir / "data.part"
+    )
+
+    part_path.touch()
+
+    metadata = {
+        "version": 1,
+        "upload_id": upload_id,
+        "relative_path": (
+            relative_path.as_posix()
+        ),
+        "size": total_size,
+        "bytes_received": 0,
+        "status": "uploading",
+        "sha256": None,
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+
+    _write_upload_metadata(
+        metadata_path,
+        metadata,
+    )
+
+    return jsonify({
+        "success": True,
+        "upload": metadata,
+    })
+
+
+@app.route(
+    "/api/staging/uploads/<upload_id>",
+    methods=["GET"],
+)
+def staging_resumable_status_api(upload_id):
+    try:
+        (
+            root,
+            session_dir,
+            metadata_path,
+            part_path,
+            metadata,
+        ) = _load_upload_metadata(upload_id)
+
+    except (OSError, ValueError, RuntimeError) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+    return jsonify({
+        "success": True,
+        "upload": metadata,
+    })
+
+
+@app.route(
+    "/api/staging/uploads/<upload_id>/chunk",
+    methods=["POST"],
+)
+def staging_resumable_chunk_api(upload_id):
+    import hashlib
+    import os
+    import time
+
+    try:
+        (
+            root,
+            session_dir,
+            metadata_path,
+            part_path,
+            metadata,
+        ) = _load_upload_metadata(upload_id)
+
+        if metadata.get("status") != "uploading":
+            raise ValueError(
+                "Upload is not accepting chunks."
+            )
+
+        try:
+            offset = int(
+                request.headers.get(
+                    "X-TapeBox-Offset",
+                    "-1",
+                )
+            )
+        except ValueError:
+            raise ValueError(
+                "Invalid upload offset."
+            )
+
+        committed = int(
+            metadata.get(
+                "bytes_received",
+                0,
+            )
+        )
+
+        if offset != committed:
+            return jsonify({
+                "success": False,
+                "error": "Upload offset mismatch.",
+                "expected_offset": committed,
+            }), 409
+
+        chunk = request.get_data(
+            cache=False,
+            as_text=False,
+        )
+
+        if not chunk:
+            raise ValueError(
+                "Empty upload chunk."
+            )
+
+        total_size = int(metadata["size"])
+
+        if committed + len(chunk) > total_size:
+            raise ValueError(
+                "Chunk exceeds declared file size."
+            )
+
+        supplied_hash = (
+            request.headers.get(
+                "X-TapeBox-Chunk-SHA256",
+                "",
+            )
+            .strip()
+            .lower()
+        )
+
+        #
+        # Always hash the received chunk on the server.
+        #
+        # Browsers served over plain LAN HTTP may not expose
+        # crypto.subtle, so the client hash is optional.
+        # When supplied, it must match.
+        #
+        actual_hash = hashlib.sha256(
+            chunk
+        ).hexdigest()
+
+        if (
+            supplied_hash
+            and supplied_hash != actual_hash
+        ):
+            raise ValueError(
+                "Chunk SHA-256 verification failed."
+            )
+
+        with open(part_path, "ab") as handle:
+            handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        metadata["bytes_received"] = (
+            committed + len(chunk)
+        )
+        metadata["updated_at"] = time.time()
+
+        _write_upload_metadata(
+            metadata_path,
+            metadata,
+        )
+
+        return jsonify({
+            "success": True,
+            "bytes_received": (
+                metadata["bytes_received"]
+            ),
+            "size": total_size,
+        })
+
+    except (OSError, ValueError, RuntimeError) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+
+@app.route(
+    "/api/staging/uploads/<upload_id>/complete",
+    methods=["POST"],
+)
+def staging_resumable_complete_api(upload_id):
+    import hashlib
+    import os
+    import shutil
+    import time
+
+    try:
+        (
+            root,
+            session_dir,
+            metadata_path,
+            part_path,
+            metadata,
+        ) = _load_upload_metadata(upload_id)
+
+        total_size = int(
+            metadata["size"]
+        )
+
+        received = int(
+            metadata.get(
+                "bytes_received",
+                0,
+            )
+        )
+
+        if received != total_size:
+            raise ValueError(
+                "Upload is not complete."
+            )
+
+        relative_path = (
+            _safe_upload_relative_path(
+                metadata["relative_path"]
+            )
+        )
+
+        destination = (
+            root / relative_path
+        ).resolve()
+
+        try:
+            destination.relative_to(root)
+        except ValueError:
+            raise ValueError(
+                "Upload destination is outside "
+                "the staging area."
+            )
+
+        if destination.exists():
+            raise ValueError(
+                "Destination already exists."
+            )
+
+        metadata["status"] = "verifying"
+        metadata["updated_at"] = time.time()
+
+        _write_upload_metadata(
+            metadata_path,
+            metadata,
+        )
+
+        digest = hashlib.sha256()
+
+        with open(part_path, "rb") as handle:
+            while True:
+                block = handle.read(
+                    16 * 1024 * 1024
+                )
+
+                if not block:
+                    break
+
+                digest.update(block)
+
+        whole_sha256 = digest.hexdigest()
+
+        with open(part_path, "rb") as handle:
+            os.fsync(handle.fileno())
+
+        destination.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        part_path.replace(destination)
+
+        metadata["status"] = "complete"
+        metadata["sha256"] = whole_sha256
+        metadata["bytes_received"] = total_size
+        metadata["updated_at"] = time.time()
+
+        _write_upload_metadata(
+            metadata_path,
+            metadata,
+        )
+
+        return jsonify({
+            "success": True,
+            "upload": metadata,
+            "path": relative_path.as_posix(),
+            "sha256": whole_sha256,
+        })
+
+    except (OSError, ValueError, RuntimeError) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
 
 
 #
