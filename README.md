@@ -659,9 +659,9 @@ TapeBox is an independent open-source project and is not affiliated with or endo
 
 ## License
 
-A project license has not yet been selected.
+TapeBox is licensed under the **MIT License**.
 
-Before treating TapeBox as a generally redistributable open-source project, add an appropriate license file.
+See the `LICENSE` file for the full license terms.
 
 ---
 
