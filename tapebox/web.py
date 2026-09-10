@@ -1346,6 +1346,17 @@ def _resolve_staging_path(relative_path=""):
             "Parent path traversal is not allowed."
         )
 
+    #
+    # TapeBox private resumable-upload state.
+    #
+    if (
+        relative.parts
+        and relative.parts[0] == ".uploads"
+    ):
+        raise ValueError(
+            "TapeBox internal staging paths are not accessible."
+        )
+
     target = (
         root / relative
     ).resolve()
