@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 from tapebox.database import (
@@ -344,7 +345,6 @@ def refresh_tape_manifest(
 
     # Give the drive a moment to finish releasing after the previous
     # LTFS unmount. mount_ltfs() also contains its own retry logic.
-    import time
     time.sleep(1.0)
 
     mount_result = mount_ltfs(
@@ -437,7 +437,10 @@ def refresh_tape_manifest(
     return result
 
 
-def archive_file(source_path):
+def archive_file(
+    source_path,
+    progress_callback=None,
+):
     """
     Archive one regular file to the currently loaded LTFS cartridge.
 
@@ -668,6 +671,25 @@ def archive_file(source_path):
 
         digest = hashlib.sha256()
 
+        copied_bytes = 0
+        copy_started = time.monotonic()
+
+        if progress_callback:
+            try:
+                progress_callback({
+                    "phase": "copying",
+                    "filename": source.name,
+                    "source": str(source),
+                    "bytes_done": 0,
+                    "bytes_total": source_size,
+                    "percent": 0.0,
+                    "speed_bytes_per_second": 0.0,
+                    "elapsed_seconds": 0.0,
+                    "tape_label": tape["label"],
+                })
+            except Exception:
+                pass
+
         with open(source, "rb") as src:
             with open(
                 temp_destination,
@@ -685,8 +707,75 @@ def archive_file(source_path):
                     dst.write(chunk)
                     digest.update(chunk)
 
+                    copied_bytes += len(chunk)
+
+                    elapsed = (
+                        time.monotonic()
+                        - copy_started
+                    )
+
+                    speed = (
+                        copied_bytes / elapsed
+                        if elapsed > 0
+                        else 0.0
+                    )
+
+                    percent = (
+                        (
+                            copied_bytes
+                            / source_size
+                        )
+                        * 100.0
+                        if source_size > 0
+                        else 100.0
+                    )
+
+                    if progress_callback:
+                        try:
+                            progress_callback({
+                                "phase": "copying",
+                                "filename": source.name,
+                                "source": str(source),
+                                "bytes_done": copied_bytes,
+                                "bytes_total": source_size,
+                                "percent": min(
+                                    percent,
+                                    100.0,
+                                ),
+                                "speed_bytes_per_second": speed,
+                                "elapsed_seconds": elapsed,
+                                "tape_label": tape["label"],
+                            })
+                        except Exception:
+                            pass
+
                 dst.flush()
                 os.fsync(dst.fileno())
+
+        if progress_callback:
+            elapsed = (
+                time.monotonic()
+                - copy_started
+            )
+
+            try:
+                progress_callback({
+                    "phase": "finalizing",
+                    "filename": source.name,
+                    "source": str(source),
+                    "bytes_done": source_size,
+                    "bytes_total": source_size,
+                    "percent": 100.0,
+                    "speed_bytes_per_second": (
+                        source_size / elapsed
+                        if elapsed > 0
+                        else 0.0
+                    ),
+                    "elapsed_seconds": elapsed,
+                    "tape_label": tape["label"],
+                })
+            except Exception:
+                pass
 
         copied_size = (
             temp_destination.stat().st_size
@@ -1216,9 +1305,16 @@ def archive_folder(source_path):
     return result
 
 
-def archive_path(source_path):
+def archive_path(
+    source_path,
+    progress_callback=None,
+):
     """
     Archive either one regular file or one directory tree.
+
+    progress_callback is currently used by the
+    single-file archive path. Folder job telemetry
+    is added separately.
     """
 
     source = Path(
@@ -1227,11 +1323,13 @@ def archive_path(source_path):
 
     if source.is_dir():
         return archive_folder_job(
-            source
+            source,
+            progress_callback=progress_callback,
         )
 
     return archive_file(
-        source
+        source,
+        progress_callback=progress_callback,
     )
 
 
@@ -1261,7 +1359,213 @@ def _collect_archive_folder_files(source):
     return files
 
 
-def archive_folder_job(source_path, job_id=None):
+
+def create_archive_selection_snapshot(
+    staging_root,
+    selected_paths,
+):
+    """
+    Create a persistent hard-link snapshot for a web-selected
+    archive job.
+
+    The snapshot lives on the staging filesystem so normal files
+    are not copied before being written to tape.
+    """
+
+    import datetime
+    import os
+    import uuid
+
+    staging_root = Path(
+        staging_root
+    ).expanduser().resolve()
+
+    if not staging_root.is_dir():
+        raise RuntimeError(
+            f"Staging root does not exist: {staging_root}"
+        )
+
+    if not selected_paths:
+        raise RuntimeError(
+            "No staging items were selected."
+        )
+
+    jobs_root = (
+        staging_root
+        / ".tapebox-jobs"
+    )
+
+    jobs_root.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    timestamp = (
+        datetime.datetime.now()
+        .strftime("%Y%m%d-%H%M%S")
+    )
+
+    snapshot = (
+        jobs_root
+        / (
+            "Archive-"
+            + timestamp
+            + "-"
+            + uuid.uuid4().hex[:8]
+        )
+    )
+
+    snapshot.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
+
+    copied_sources = set()
+
+    try:
+        for selected in selected_paths:
+            selected = Path(
+                selected
+            ).expanduser().resolve()
+
+            try:
+                selected_relative = (
+                    selected.relative_to(
+                        staging_root
+                    )
+                )
+            except ValueError:
+                raise RuntimeError(
+                    "Selected path is outside the "
+                    f"staging directory: {selected}"
+                )
+
+            if (
+                selected_relative.parts
+                and selected_relative.parts[0]
+                == ".tapebox-jobs"
+            ):
+                raise RuntimeError(
+                    "Internal TapeBox job files "
+                    "cannot be archived."
+                )
+
+            if selected.is_symlink():
+                raise RuntimeError(
+                    "Symbolic links cannot be archived: "
+                    f"{selected}"
+                )
+
+            if not selected.exists():
+                raise RuntimeError(
+                    "Selected staging item no longer exists: "
+                    f"{selected}"
+                )
+
+            if selected.is_file():
+                source_files = [
+                    (
+                        selected,
+                        Path(selected.name),
+                    )
+                ]
+
+            elif selected.is_dir():
+                source_files = []
+
+                for source_file in (
+                    _collect_archive_folder_files(
+                        selected
+                    )
+                ):
+                    source_files.append(
+                        (
+                            source_file,
+                            Path(selected.name)
+                            / source_file.relative_to(
+                                selected
+                            ),
+                        )
+                    )
+
+            else:
+                raise RuntimeError(
+                    "Selected staging item is not "
+                    "a regular file or directory: "
+                    f"{selected}"
+                )
+
+            for source_file, destination_relative in source_files:
+                resolved_source = (
+                    source_file.resolve()
+                )
+
+                if resolved_source in copied_sources:
+                    continue
+
+                copied_sources.add(
+                    resolved_source
+                )
+
+                destination = (
+                    snapshot
+                    / destination_relative
+                )
+
+                destination.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                if destination.exists():
+                    raise RuntimeError(
+                        "Archive selection contains conflicting "
+                        f"paths: {destination_relative}"
+                    )
+
+                try:
+                    os.link(
+                        source_file,
+                        destination,
+                    )
+
+                except OSError as exc:
+                    raise RuntimeError(
+                        "Could not create archive-selection "
+                        f"hard link for {source_file}: {exc}"
+                    )
+
+        files = _collect_archive_folder_files(
+            snapshot
+        )
+
+        return {
+            "success": True,
+            "snapshot_path": str(snapshot),
+            "archive_name": snapshot.name,
+            "file_count": len(files),
+            "total_bytes": sum(
+                file.stat().st_size
+                for file in files
+            ),
+        }
+
+    except Exception:
+        import shutil
+
+        shutil.rmtree(
+            snapshot,
+            ignore_errors=True,
+        )
+
+        raise
+
+
+def archive_folder_job(
+    source_path,
+    job_id=None,
+    progress_callback=None,
+):
     """
     Archive a folder using a resumable archive job.
 
@@ -1965,6 +2269,51 @@ def archive_folder_job(source_path, job_id=None):
 
             digest = hashlib.sha256()
 
+            file_copied = 0
+            file_started = time.monotonic()
+
+            completed_before_current = (
+                len(completed_paths)
+                + len(catalog_records)
+            )
+
+            if progress_callback:
+                try:
+                    progress_callback({
+                        "phase": "copying",
+                        "kind": "folder",
+                        "filename": source_file.name,
+                        "relative_path": relative.as_posix(),
+                        "bytes_done": 0,
+                        "bytes_total": source_size,
+                        "percent": 0.0,
+                        "speed_bytes_per_second": 0.0,
+                        "elapsed_seconds": 0.0,
+                        "tape_label": tape["label"],
+                        "job_id": job_id,
+                        "job_files_done": completed_before_current,
+                        "job_files_total": len(files),
+                        "job_bytes_done": (
+                            previous_bytes
+                            + copied_this_tape
+                        ),
+                        "job_bytes_total": total_bytes,
+                        "job_percent": (
+                            (
+                                (
+                                    previous_bytes
+                                    + copied_this_tape
+                                )
+                                / total_bytes
+                            )
+                            * 100.0
+                            if total_bytes > 0
+                            else 100.0
+                        ),
+                    })
+                except Exception:
+                    pass
+
             with open(
                 source_file,
                 "rb",
@@ -1989,10 +2338,136 @@ def archive_folder_job(source_path, job_id=None):
                             chunk
                         )
 
+                        file_copied += len(
+                            chunk
+                        )
+
+                        elapsed = (
+                            time.monotonic()
+                            - file_started
+                        )
+
+                        speed = (
+                            file_copied / elapsed
+                            if elapsed > 0
+                            else 0.0
+                        )
+
+                        file_percent = (
+                            (
+                                file_copied
+                                / source_size
+                            )
+                            * 100.0
+                            if source_size > 0
+                            else 100.0
+                        )
+
+                        job_bytes_done = (
+                            previous_bytes
+                            + copied_this_tape
+                            + file_copied
+                        )
+
+                        job_percent = (
+                            (
+                                job_bytes_done
+                                / total_bytes
+                            )
+                            * 100.0
+                            if total_bytes > 0
+                            else 100.0
+                        )
+
+                        if progress_callback:
+                            try:
+                                progress_callback({
+                                    "phase": "copying",
+                                    "kind": "folder",
+                                    "filename": source_file.name,
+                                    "relative_path": relative.as_posix(),
+                                    "bytes_done": file_copied,
+                                    "bytes_total": source_size,
+                                    "percent": min(
+                                        file_percent,
+                                        100.0,
+                                    ),
+                                    "speed_bytes_per_second": speed,
+                                    "elapsed_seconds": elapsed,
+                                    "tape_label": tape["label"],
+                                    "job_id": job_id,
+                                    "job_files_done": completed_before_current,
+                                    "job_files_total": len(files),
+                                    "job_bytes_done": min(
+                                        job_bytes_done,
+                                        total_bytes,
+                                    ),
+                                    "job_bytes_total": total_bytes,
+                                    "job_percent": min(
+                                        job_percent,
+                                        100.0,
+                                    ),
+                                })
+                            except Exception:
+                                pass
+
                     dst.flush()
                     os.fsync(
                         dst.fileno()
                     )
+
+            if progress_callback:
+                elapsed = (
+                    time.monotonic()
+                    - file_started
+                )
+
+                try:
+                    progress_callback({
+                        "phase": "finalizing_file",
+                        "kind": "folder",
+                        "filename": source_file.name,
+                        "relative_path": relative.as_posix(),
+                        "bytes_done": source_size,
+                        "bytes_total": source_size,
+                        "percent": 100.0,
+                        "speed_bytes_per_second": (
+                            source_size / elapsed
+                            if elapsed > 0
+                            else 0.0
+                        ),
+                        "elapsed_seconds": elapsed,
+                        "tape_label": tape["label"],
+                        "job_id": job_id,
+                        "job_files_done": (
+                            completed_before_current
+                            + 1
+                        ),
+                        "job_files_total": len(files),
+                        "job_bytes_done": min(
+                            previous_bytes
+                            + copied_this_tape
+                            + source_size,
+                            total_bytes,
+                        ),
+                        "job_bytes_total": total_bytes,
+                        "job_percent": min(
+                            (
+                                (
+                                    previous_bytes
+                                    + copied_this_tape
+                                    + source_size
+                                )
+                                / total_bytes
+                            )
+                            * 100.0
+                            if total_bytes > 0
+                            else 100.0,
+                            100.0,
+                        ),
+                    })
+                except Exception:
+                    pass
 
             copied_size = (
                 temp_destination.stat().st_size

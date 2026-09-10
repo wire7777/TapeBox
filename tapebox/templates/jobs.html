@@ -34,6 +34,7 @@ Archive Jobs · TapeBox
     <th>Files</th>
     <th>Size</th>
     <th>Written</th>
+    <th>Actions</th>
 </tr>
 </thead>
 
@@ -77,6 +78,28 @@ Archive Jobs · TapeBox
         {{ job["bytes_written"] | format_bytes }}
     </td>
 
+    <td
+        onclick="event.stopPropagation();"
+    >
+        {% if job["status"] in ["running", "waiting_for_tape"] %}
+
+        <button
+            type="button"
+            class="action-button job-cancel-button"
+            data-job-id="{{ job['id'] }}"
+        >
+            Cancel Job
+        </button>
+
+        {% else %}
+
+        <span class="muted">
+            —
+        </span>
+
+        {% endif %}
+    </td>
+
 </tr>
 
 {% endfor %}
@@ -96,5 +119,83 @@ Archive Jobs · TapeBox
 {% endif %}
 
 </section>
+
+
+<script>
+document.addEventListener(
+    "click",
+    async function (event) {
+        const button =
+            event.target.closest(
+                ".job-cancel-button"
+            );
+
+        if (!button) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        const jobId =
+            button.dataset.jobId;
+
+        if (
+            !confirm(
+                "Cancel archive job #"
+                + jobId
+                + "?\n\n"
+                + "Files already safely written to tape "
+                + "will remain in the catalog."
+            )
+        ) {
+            return;
+        }
+
+        const originalText =
+            button.textContent;
+
+        button.disabled = true;
+        button.textContent =
+            "Cancelling...";
+
+        try {
+            const response =
+                await fetch(
+                    `/jobs/${jobId}/cancel`,
+                    {
+                        method: "POST",
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok ||
+                !data.success
+            ) {
+                throw new Error(
+                    data.error ||
+                    "Could not cancel archive job."
+                );
+            }
+
+            window.location.reload();
+
+        } catch (error) {
+            alert(
+                error.message ||
+                String(error)
+            );
+
+            button.disabled = false;
+            button.textContent =
+                originalText;
+        }
+    },
+    true
+);
+</script>
 
 {% endblock %}

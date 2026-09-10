@@ -22,6 +22,7 @@ from tapebox.database import (
     list_files,
     list_archive_jobs,
     get_archive_job,
+    update_archive_job,
     get_archive_job_files,
     get_archive_restore_plan,
     get_tape_by_id,
@@ -45,6 +46,7 @@ from tapebox.restore import (
 
 from tapebox.archive import (
     archive_path,
+    create_archive_selection_snapshot,
 )
 
 from tapebox.tape import (
@@ -262,6 +264,7 @@ def _restore_worker(
 def _archive_staging_worker(
     operation_id,
     source_path,
+    cleanup_on_complete=False,
 ):
     """
     Archive one staging file or directory outside the HTTP
@@ -285,8 +288,51 @@ def _archive_staging_worker(
                 "Archiving to tape..."
             )
 
+        def archive_progress(progress):
+            with OPERATION_STATE_LOCK:
+                operation = OPERATIONS.get(
+                    operation_id
+                )
+
+                if operation is None:
+                    return
+
+                operation["transfer"] = dict(
+                    progress
+                )
+
+                phase = progress.get(
+                    "phase"
+                )
+
+                filename = progress.get(
+                    "filename"
+                )
+
+                if phase == "copying":
+                    operation["message"] = (
+                        f"Writing {filename} to tape..."
+                        if filename
+                        else "Writing to tape..."
+                    )
+
+                elif phase == "finalizing_file":
+                    operation["message"] = (
+                        f"Finalizing {filename}..."
+                        if filename
+                        else "Finalizing file..."
+                    )
+
+                elif phase == "finalizing":
+                    operation["message"] = (
+                        f"Finalizing {filename}..."
+                        if filename
+                        else "Finalizing archive..."
+                    )
+
         result = archive_path(
-            Path(source_path)
+            Path(source_path),
+            progress_callback=archive_progress,
         )
 
         with OPERATION_STATE_LOCK:
@@ -354,6 +400,45 @@ def _archive_staging_worker(
                 operation["job_id"] = (
                     result["job_id"]
                 )
+
+        #
+        # A web selection snapshot consists only of hard links.
+        # Once the entire archive job is complete, it is safe to
+        # remove those links. Keep the snapshot for waiting/error
+        # states so the resumable archive job still has its source.
+        #
+        if (
+            cleanup_on_complete
+            and result.get("success")
+            and result.get("completed") is True
+        ):
+            snapshot_path = Path(
+                source_path
+            )
+
+            try:
+                if (
+                    snapshot_path.is_dir()
+                    and snapshot_path.parent.name
+                    == ".tapebox-jobs"
+                ):
+                    shutil.rmtree(
+                        snapshot_path
+                    )
+
+            except Exception as cleanup_exc:
+                with OPERATION_STATE_LOCK:
+                    operation = OPERATIONS.get(
+                        operation_id
+                    )
+
+                    if operation is not None:
+                        operation["messages"].append(
+                            "Archive completed, but the "
+                            "selection snapshot could not be "
+                            "removed: "
+                            + str(cleanup_exc)
+                        )
 
     except Exception as exc:
         result = {
@@ -533,6 +618,98 @@ def jobs_page():
         "jobs.html",
         active_page="jobs",
         jobs=jobs,
+    )
+
+
+
+@app.route(
+    "/jobs/<int:job_id>/cancel",
+    methods=["POST"],
+)
+def cancel_archive_job_action(job_id):
+    """
+    Cancel an abandoned/stale archive job.
+
+    A job that still has an active in-memory TapeBox operation
+    cannot be cancelled here because the worker may currently be
+    writing or finalizing tape data.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    initialize_database()
+
+    job = get_archive_job(
+        job_id
+    )
+
+    if job is None:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Archive job not found.",
+            }
+        ), 404
+
+    if job["status"] not in (
+        "running",
+        "waiting_for_tape",
+    ):
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Only RUNNING or WAITING_FOR_TAPE "
+                    "jobs can be cancelled."
+                ),
+            }
+        ), 409
+
+    #
+    # Never change SQLite underneath a worker that is still
+    # actively using this archive job.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            if (
+                active is not None
+                and active.get("job_id")
+                == job_id
+                and active.get("status")
+                not in (
+                    "completed",
+                    "failed",
+                    "waiting_for_tape",
+                )
+            ):
+                return jsonify(
+                    {
+                        "success": False,
+                        "busy": True,
+                        "error": (
+                            "This archive job is still actively "
+                            "running. TapeBox will not cancel it "
+                            "while a tape write may be in progress."
+                        ),
+                    }
+                ), 409
+
+    update_archive_job(
+        job_id,
+        status="cancelled",
+        error="Cancelled by user.",
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "job_id": job_id,
+            "status": "cancelled",
+        }
     )
 
 
@@ -1247,6 +1424,790 @@ def staging_page():
         free_bytes=free_bytes,
     )
 
+
+
+@app.route(
+    "/api/staging/upload",
+    methods=["POST"],
+)
+def staging_upload_api():
+    """
+    Upload one or more files into the currently browsed
+    TapeBox staging directory.
+
+    Files are first written with a hidden temporary name and
+    atomically renamed only after the upload completes.
+    """
+
+    initialize_default_settings()
+
+    relative_path = request.form.get(
+        "path",
+        "",
+    ).strip()
+
+    try:
+        root, target = _resolve_staging_path(
+            relative_path
+        )
+
+        if not target.exists():
+            raise ValueError(
+                "Upload destination does not exist."
+            )
+
+        if not target.is_dir():
+            raise ValueError(
+                "Upload destination is not a folder."
+            )
+
+    except (OSError, ValueError) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+    uploads = request.files.getlist(
+        "files"
+    )
+
+    if not uploads:
+        return jsonify({
+            "success": False,
+            "error": "No files were selected.",
+        }), 400
+
+    uploaded = []
+
+    for upload in uploads:
+        original_name = (
+            upload.filename or ""
+        )
+
+        #
+        # Browsers may supply a fake or client-side path.
+        # TapeBox accepts only the final filename component.
+        #
+        filename = Path(
+            original_name.replace(
+                "\\",
+                "/",
+            )
+        ).name.strip()
+
+        if (
+            not filename
+            or filename in (".", "..")
+        ):
+            return jsonify({
+                "success": False,
+                "error": "Invalid upload filename.",
+            }), 400
+
+        destination = (
+            target / filename
+        ).resolve()
+
+        try:
+            destination.relative_to(root)
+        except ValueError:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Upload destination is outside "
+                    "the staging area."
+                ),
+            }), 400
+
+        if destination.exists():
+            return jsonify({
+                "success": False,
+                "error": (
+                    f"{filename} already exists "
+                    "in this staging folder."
+                ),
+            }), 409
+
+        temp_destination = (
+            destination.parent
+            / (
+                ".tapebox-upload-"
+                + uuid.uuid4().hex
+                + "-"
+                + filename
+            )
+        )
+
+        try:
+            upload.save(
+                str(temp_destination)
+            )
+
+            #
+            # Re-check immediately before final rename.
+            #
+            if destination.exists():
+                temp_destination.unlink(
+                    missing_ok=True
+                )
+
+                return jsonify({
+                    "success": False,
+                    "error": (
+                        f"{filename} already exists "
+                        "in this staging folder."
+                    ),
+                }), 409
+
+            temp_destination.rename(
+                destination
+            )
+
+            uploaded.append({
+                "name": filename,
+                "size_bytes": (
+                    destination.stat().st_size
+                ),
+                "path": str(
+                    destination.relative_to(root)
+                ),
+            })
+
+        except Exception:
+            try:
+                temp_destination.unlink(
+                    missing_ok=True
+                )
+            except OSError:
+                pass
+
+            raise
+
+    return jsonify({
+        "success": True,
+        "uploaded": uploaded,
+        "count": len(uploaded),
+    })
+
+
+#
+# Archive Planner
+#
+# LTO-6 native capacity is 2.5 TB. TapeBox intentionally
+# plans conservatively so archives are not packed all the
+# way to the physical/format limit.
+#
+ARCHIVE_PLANNER_TAPE_CAPACITY_BYTES = 2_400_000_000_000
+
+
+def _collect_planner_files(path):
+    """
+    Return regular files contained by a selected staging
+    path.
+
+    Directories are walked recursively. Symlinks are skipped
+    so the planner cannot escape the configured staging tree.
+    """
+
+    path = Path(path)
+
+    if path.is_symlink():
+        return []
+
+    if path.is_file():
+        return [path]
+
+    if not path.is_dir():
+        return []
+
+    files = []
+
+    for candidate in sorted(
+        path.rglob("*"),
+        key=lambda item: str(item).lower(),
+    ):
+        if candidate.is_symlink():
+            continue
+
+        if candidate.is_file():
+            files.append(candidate)
+
+    return files
+
+
+def _build_archive_plan(paths):
+    """
+    Simulate TapeBox media usage.
+
+    Normal files remain whole whenever they fit on a tape.
+    A file larger than one tape's usable capacity is allowed
+    to span cartridges.
+    """
+
+    capacity = ARCHIVE_PLANNER_TAPE_CAPACITY_BYTES
+
+    files = []
+
+    for path in paths:
+        files.extend(
+            _collect_planner_files(path)
+        )
+
+    #
+    # A selection can contain both a directory and one of
+    # its children. Do not count the same physical source
+    # file twice.
+    #
+    unique_files = {}
+
+    for file_path in files:
+        try:
+            resolved = file_path.resolve()
+            stat_result = resolved.stat()
+        except OSError:
+            continue
+
+        unique_files[str(resolved)] = {
+            "path": resolved,
+            "size": int(stat_result.st_size),
+        }
+
+    file_entries = list(
+        unique_files.values()
+    )
+
+    total_bytes = sum(
+        item["size"]
+        for item in file_entries
+    )
+
+    spanning_files = [
+        item
+        for item in file_entries
+        if item["size"] > capacity
+    ]
+
+    tapes = []
+
+    def new_tape():
+        tape = {
+            "number": len(tapes) + 1,
+            "used_bytes": 0,
+            "files": 0,
+            "parts": 0,
+        }
+
+        tapes.append(tape)
+
+        return tape
+
+    current_tape = None
+
+    for item in file_entries:
+        size = item["size"]
+
+        #
+        # Zero-byte files require catalog space but no
+        # meaningful tape capacity.
+        #
+        if size == 0:
+            if current_tape is None:
+                current_tape = new_tape()
+
+            current_tape["files"] += 1
+            continue
+
+        #
+        # Normal files stay whole.
+        #
+        if size <= capacity:
+            if current_tape is None:
+                current_tape = new_tape()
+
+            remaining = (
+                capacity
+                - current_tape["used_bytes"]
+            )
+
+            if size > remaining:
+                current_tape = new_tape()
+
+            current_tape["used_bytes"] += size
+            current_tape["files"] += 1
+            current_tape["parts"] += 1
+
+            continue
+
+        #
+        # Oversized file: this file is allowed to span tapes.
+        #
+        bytes_remaining = size
+
+        while bytes_remaining > 0:
+            if current_tape is None:
+                current_tape = new_tape()
+
+            remaining = (
+                capacity
+                - current_tape["used_bytes"]
+            )
+
+            if remaining <= 0:
+                current_tape = new_tape()
+                remaining = capacity
+
+            chunk = min(
+                bytes_remaining,
+                remaining,
+            )
+
+            current_tape["used_bytes"] += chunk
+            current_tape["parts"] += 1
+
+            bytes_remaining -= chunk
+
+            if bytes_remaining > 0:
+                current_tape = new_tape()
+
+        current_tape["files"] += 1
+
+    tape_count = len(tapes)
+
+    if tape_count:
+        final_free = max(
+            0,
+            capacity
+            - tapes[-1]["used_bytes"],
+        )
+    else:
+        final_free = capacity
+
+    return {
+        "capacity_bytes": capacity,
+        "capacity_tb": capacity / 1_000_000_000_000,
+        "file_count": len(file_entries),
+        "total_bytes": total_bytes,
+        "tape_count": tape_count,
+        "spanning_required": bool(spanning_files),
+        "spanning_file_count": len(spanning_files),
+        "final_tape_free_bytes": final_free,
+        "tapes": tapes,
+    }
+
+
+@app.route(
+    "/api/staging/plan",
+    methods=["POST"],
+)
+def staging_plan_api():
+    """
+    Calculate estimated tape requirements for selected
+    staging files and folders.
+    """
+
+    initialize_database()
+    initialize_default_settings()
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    relative_paths = data.get(
+        "paths",
+        [],
+    )
+
+    if not isinstance(
+        relative_paths,
+        list,
+    ):
+        return jsonify({
+            "success": False,
+            "error": (
+                "Planner paths must be a list."
+            ),
+        }), 400
+
+    if not relative_paths:
+        return jsonify({
+            "success": False,
+            "error": (
+                "Select at least one staging "
+                "file or folder."
+            ),
+        }), 400
+
+    targets = []
+
+    try:
+        for relative_path in relative_paths:
+            relative_path = str(
+                relative_path
+            ).strip()
+
+            if not relative_path:
+                continue
+
+            root, target = (
+                _resolve_staging_path(
+                    relative_path
+                )
+            )
+
+            if target.is_symlink():
+                raise ValueError(
+                    "Symlinks cannot be planned."
+                )
+
+            if not target.exists():
+                raise ValueError(
+                    f"Staging item no longer exists: "
+                    f"{relative_path}"
+                )
+
+            if not (
+                target.is_file()
+                or target.is_dir()
+            ):
+                raise ValueError(
+                    f"Unsupported staging item: "
+                    f"{relative_path}"
+                )
+
+            target.relative_to(root)
+
+            targets.append(target)
+
+    except (
+        OSError,
+        ValueError,
+    ) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+    if not targets:
+        return jsonify({
+            "success": False,
+            "error": (
+                "No valid staging items were selected."
+            ),
+        }), 400
+
+    plan = _build_archive_plan(
+        targets
+    )
+
+    return jsonify({
+        "success": True,
+        "plan": plan,
+    })
+
+
+
+@app.route(
+    "/api/staging/archive-selected",
+    methods=["POST"],
+)
+def staging_archive_selected_api():
+    """
+    Start one resumable archive job containing multiple selected
+    staging files and/or folders.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    initialize_database()
+    initialize_default_settings()
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    relative_paths = payload.get(
+        "paths",
+        []
+    )
+
+    if not isinstance(
+        relative_paths,
+        list,
+    ):
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Selected paths must be a list."
+                ),
+            }
+        ), 400
+
+    relative_paths = [
+        str(path).strip()
+        for path in relative_paths
+        if str(path).strip()
+    ]
+
+    if not relative_paths:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "At least one staging item "
+                    "must be selected."
+                ),
+            }
+        ), 400
+
+    #
+    # A mounted Inspector cartridge owns the physical tape drive.
+    #
+    inspector_mount = Path(
+        "/mnt/tapebox/ltfs-inspect"
+    )
+
+    if _is_mounted(
+        inspector_mount
+    ):
+        return jsonify(
+            {
+                "success": False,
+                "busy": True,
+                "error": (
+                    "Tape Inspector currently owns "
+                    "the tape drive. Unmount and eject "
+                    "the Inspector cartridge first."
+                ),
+                "operation": None,
+            }
+        ), 409
+
+    #
+    # Resolve and validate everything before creating a snapshot.
+    #
+    selected_targets = []
+
+    try:
+        staging_root = Path(
+            get_setting(
+                "staging_directory",
+                "/mnt/tapebox/staging",
+            )
+        ).expanduser().resolve()
+
+        for relative_path in relative_paths:
+            root, target = _resolve_staging_path(
+                relative_path
+            )
+
+            candidate = (
+                root
+                / Path(relative_path)
+            )
+
+            if candidate.is_symlink():
+                raise ValueError(
+                    "Symbolic links cannot be archived."
+                )
+
+            if not target.exists():
+                raise ValueError(
+                    "Selected staging item "
+                    "does not exist: "
+                    + relative_path
+                )
+
+            if not (
+                target.is_file()
+                or target.is_dir()
+            ):
+                raise ValueError(
+                    "Selected staging item is not "
+                    "a regular file or directory: "
+                    + relative_path
+                )
+
+            selected_targets.append(
+                target
+            )
+
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 400
+
+    #
+    # Reserve the physical tape operation before making the
+    # persistent hard-link selection snapshot.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "already running."
+                    ),
+                    "operation": (
+                        _operation_snapshot(active)
+                        if active
+                        else None
+                    ),
+                }
+            ), 409
+
+        operation_id = uuid.uuid4().hex
+
+        #
+        # Reserve ownership immediately so another request cannot
+        # start while this request creates its snapshot.
+        #
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_id
+        )
+
+    try:
+        snapshot = (
+            create_archive_selection_snapshot(
+                staging_root,
+                selected_targets,
+            )
+        )
+
+        snapshot_path = Path(
+            snapshot["snapshot_path"]
+        )
+
+    except Exception as exc:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 400
+
+    operation = {
+        "id": operation_id,
+        "type": "archive_staging_selection",
+        "job_id": None,
+        "destination": str(
+            snapshot_path
+        ),
+        "status": "starting",
+        "message": (
+            "Starting selected archive..."
+        ),
+        "messages": [
+            "Starting selected archive..."
+        ],
+        "transfer": None,
+        "result": None,
+        "selection": {
+            "items": len(
+                relative_paths
+            ),
+            "files": snapshot[
+                "file_count"
+            ],
+            "bytes": snapshot[
+                "total_bytes"
+            ],
+            "snapshot": str(
+                snapshot_path
+            ),
+        },
+    }
+
+    with OPERATION_STATE_LOCK:
+        OPERATIONS[
+            operation_id
+        ] = operation
+
+    worker = threading.Thread(
+        target=_archive_staging_worker,
+        args=(
+            operation_id,
+            str(snapshot_path),
+            True,
+        ),
+        daemon=True,
+        name=(
+            f"tapebox-archive-selected-"
+            f"{operation_id[:8]}"
+        ),
+    )
+
+    try:
+        worker.start()
+
+    except Exception as exc:
+        with OPERATION_STATE_LOCK:
+            operation["status"] = "failed"
+            operation["message"] = str(exc)
+            operation["result"] = {
+                "success": False,
+                "error": str(exc),
+            }
+
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+        #
+        # Worker never started, so no archive job can depend on
+        # this snapshot.
+        #
+        try:
+            shutil.rmtree(
+                snapshot_path
+            )
+        except Exception:
+            pass
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "operation_id": operation_id,
+            "operation": (
+                _operation_snapshot(
+                    operation
+                )
+            ),
+            "selection": operation[
+                "selection"
+            ],
+        }
+    )
 
 
 @app.route(
