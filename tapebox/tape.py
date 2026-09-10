@@ -1187,7 +1187,7 @@ def format_ltfs(
         )
 
     command = [
-        "/usr/local/bin/mkltfs",
+        "mkltfs",
         f"--device={sg_device}",
         f"--volume-name={volume_name}",
     ]
