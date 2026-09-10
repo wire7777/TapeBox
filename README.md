@@ -645,6 +645,18 @@ Do not interrupt TapeBox while LTFS is writing, syncing, formatting, finalizing,
 
 No archive system can protect against every hardware failure, damaged cartridge, unexpected power loss, operator mistake, or software defect. Maintain multiple copies of important data.
 
+## Disclaimer / No Warranty
+
+TapeBox is provided **"AS IS"**, without warranty of any kind, express or implied.
+
+Use TapeBox entirely at your own risk. The authors and contributors are not responsible for data loss, damaged or overwritten tapes, failed archives or restores, hardware damage, loss of business, or any other direct or indirect damages resulting from the use of this software.
+
+TapeBox can perform destructive operations, including formatting LTO cartridges. Always verify that the correct cartridge is loaded before confirming a format or other destructive operation.
+
+Important data should never exist on only one tape or in only one location. Maintain independent backups and verify your archives.
+
+TapeBox is an independent open-source project and is not affiliated with or endorsed by any LTO drive manufacturer, LTFS vendor, or the LTO Program.
+
 ## License
 
 A project license has not yet been selected.
