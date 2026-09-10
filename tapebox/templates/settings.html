@@ -386,6 +386,14 @@
 
             <button
                 type="button"
+                id="folder-picker-new"
+                class="action-button"
+            >
+                New Folder
+            </button>
+
+            <button
+                type="button"
                 id="folder-picker-select"
                 class="action-button"
             >
@@ -768,6 +776,7 @@
     const pickerError = document.getElementById("folder-picker-error");
     const pickerClose = document.getElementById("folder-picker-close");
     const pickerUp = document.getElementById("folder-picker-up");
+    const pickerNew = document.getElementById("folder-picker-new");
     const pickerSelect = document.getElementById("folder-picker-select");
 
     let activeTarget = null;
@@ -798,6 +807,8 @@
         pickerPath.textContent = currentPath || "Storage Roots";
 
         pickerUp.disabled = currentParent === null;
+
+        pickerNew.disabled = !currentPath;
 
         pickerSelect.disabled = !currentPath;
 
@@ -903,6 +914,69 @@
             }
 
             loadDirectory(currentParent || "");
+        }
+    );
+
+    pickerNew.addEventListener(
+        "click",
+        async () => {
+            if (!currentPath) {
+                return;
+            }
+
+            clearError();
+
+            const name = window.prompt(
+                "New folder name:"
+            );
+
+            if (name === null) {
+                return;
+            }
+
+            const trimmedName = name.trim();
+
+            if (!trimmedName) {
+                showError(
+                    "Folder name cannot be empty."
+                );
+                return;
+            }
+
+            pickerNew.disabled = true;
+
+            try {
+                const response = await fetch(
+                    "/api/settings/directories/create",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            parent: currentPath,
+                            name: trimmedName,
+                        }),
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(
+                        data.error ||
+                        "Could not create directory."
+                    );
+                }
+
+                await loadDirectory(data.path);
+
+            } catch (error) {
+                showError(error.message);
+
+            } finally {
+                pickerNew.disabled = false;
+            }
         }
     );
 

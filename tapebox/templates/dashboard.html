@@ -83,7 +83,7 @@ Dashboard · TapeBox
     <div class="card stat-card">
 
         <div class="stat-label">
-            Used Tape Space
+            Tape Space
         </div>
 
         <div class="stat-value small">
@@ -91,7 +91,22 @@ Dashboard · TapeBox
         </div>
 
         <div class="stat-detail">
-            Across all cartridges
+            Used
+        </div>
+
+        <div
+            class="stat-detail"
+            style="margin-top: 8px;"
+        >
+            <strong>
+                {{
+                    [
+                        total_capacity - total_used,
+                        0
+                    ] | max | format_bytes
+                }}
+            </strong>
+            free
         </div>
 
     </div>
@@ -214,6 +229,7 @@ Dashboard · TapeBox
                     <th>Generation</th>
                     <th>Status</th>
                     <th>Used</th>
+                    <th>Free</th>
                 </tr>
                 </thead>
 
@@ -241,6 +257,20 @@ Dashboard · TapeBox
 
                     <td>
                         {{ tape["used_bytes"] | format_bytes }}
+                    </td>
+
+                    <td>
+                        {% if tape["capacity_bytes"] is not none %}
+                            {{
+                                [
+                                    (tape["capacity_bytes"] or 0)
+                                    - (tape["used_bytes"] or 0),
+                                    0
+                                ] | max | format_bytes
+                            }}
+                        {% else %}
+                            -
+                        {% endif %}
                     </td>
 
                 </tr>

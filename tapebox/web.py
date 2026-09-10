@@ -2847,6 +2847,91 @@ def _settings_browse_directory(raw_path):
     }
 
 
+def _settings_create_directory(raw_parent, raw_name):
+    """
+    Create one directory inside an allowed Settings storage root.
+    """
+
+    if not raw_parent:
+        raise ValueError(
+            "Select a storage directory before creating a folder."
+        )
+
+    parent = Path(raw_parent)
+
+    if not parent.is_absolute():
+        raise ValueError(
+            "Parent directory must be an absolute path."
+        )
+
+    parent = parent.resolve()
+
+    allowed_root = None
+
+    for root in SETTINGS_BROWSE_ROOTS:
+        root_resolved = root.resolve()
+
+        try:
+            parent.relative_to(root_resolved)
+            allowed_root = root_resolved
+            break
+        except ValueError:
+            continue
+
+    if allowed_root is None:
+        raise ValueError(
+            "That location is outside the allowed storage roots."
+        )
+
+    if not parent.exists():
+        raise ValueError(
+            "Parent directory does not exist."
+        )
+
+    if not parent.is_dir():
+        raise ValueError(
+            "Parent location is not a directory."
+        )
+
+    name = str(raw_name or "").strip()
+
+    if not name:
+        raise ValueError(
+            "Folder name cannot be empty."
+        )
+
+    if name in {".", ".."}:
+        raise ValueError(
+            "Invalid folder name."
+        )
+
+    if "/" in name or "\\" in name:
+        raise ValueError(
+            "Folder name cannot contain path separators."
+        )
+
+    new_directory = (parent / name).resolve()
+
+    try:
+        new_directory.relative_to(allowed_root)
+    except ValueError:
+        raise ValueError(
+            "New folder would be outside the allowed storage root."
+        )
+
+    if new_directory.exists():
+        raise ValueError(
+            "A file or folder with that name already exists."
+        )
+
+    new_directory.mkdir()
+
+    return {
+        "path": str(new_directory),
+        "name": new_directory.name,
+    }
+
+
 def _latest_catalog_backup():
     """
     Return the newest TapeBox database backup, if one exists.
@@ -3227,6 +3312,41 @@ def settings_directories_api():
             }
         ), 400
 
+
+
+@app.route(
+    "/api/settings/directories/create",
+    methods=["POST"],
+)
+def settings_create_directory_api():
+    """
+    Create a directory from the Settings folder picker.
+    """
+
+    try:
+        data = request.get_json(
+            silent=True
+        ) or {}
+
+        result = _settings_create_directory(
+            data.get("parent"),
+            data.get("name"),
+        )
+
+        return jsonify(
+            {
+                "success": True,
+                **result,
+            }
+        )
+
+    except (OSError, ValueError) as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 400
 
 
 @app.route("/settings", methods=["GET", "POST"])

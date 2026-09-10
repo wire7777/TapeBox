@@ -46,6 +46,7 @@ Tapes · TapeBox
                 <th>Generation</th>
                 <th>Status</th>
                 <th>Used</th>
+                <th>Free</th>
                 <th>Capacity</th>
                 <th>Location</th>
                 <th>LTFS UUID</th>
@@ -95,6 +96,20 @@ Tapes · TapeBox
 
                 <td>
                     {{ tape["used_bytes"] | format_bytes }}
+                </td>
+
+                <td>
+                    {% if tape["capacity_bytes"] is not none %}
+                        {{
+                            [
+                                (tape["capacity_bytes"] or 0)
+                                - (tape["used_bytes"] or 0),
+                                0
+                            ] | max | format_bytes
+                        }}
+                    {% else %}
+                        -
+                    {% endif %}
                 </td>
 
                 <td>

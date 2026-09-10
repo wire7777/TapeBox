@@ -59,6 +59,26 @@
 
     <div class="card stat-card">
         <div class="stat-label">
+            Free
+        </div>
+
+        <div class="stat-value small">
+            {% if tape["capacity_bytes"] is not none %}
+                {{
+                    [
+                        (tape["capacity_bytes"] or 0)
+                        - (tape["used_bytes"] or 0),
+                        0
+                    ] | max | format_bytes
+                }}
+            {% else %}
+                -
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-label">
             Status
         </div>
 
