@@ -46,6 +46,7 @@ from tapebox.database import (
 
 from tapebox.restore import (
     restore_archive_job,
+    restore_selected_files,
 )
 
 from tapebox.archive import (
@@ -217,6 +218,18 @@ def _restore_worker(
                         "cartridge."
                     )
 
+            elif result.get("wrong_tape"):
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+
+                operation["message"] = (
+                    result.get(
+                        "error",
+                        "Wrong cartridge inserted.",
+                    )
+                )
+
             else:
                 operation["status"] = "failed"
 
@@ -257,6 +270,155 @@ def _restore_worker(
                 ),
                 "destination": destination,
             }
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+
+def _selected_restore_worker(
+    operation_id,
+    file_ids,
+    destination,
+):
+    """
+    Run one arbitrary selected-file restore outside the HTTP
+    request thread.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    def progress(event):
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is None:
+                return
+
+            if isinstance(event, dict):
+                message = str(
+                    event.get(
+                        "message",
+                        "",
+                    )
+                )
+
+                operation["message"] = message
+
+                if (
+                    event.get("type")
+                    in {
+                        "transfer",
+                        "transfer_start",
+                    }
+                ):
+                    operation["transfer"] = dict(
+                        event
+                    )
+
+                    if (
+                        event.get("type")
+                        == "transfer_start"
+                        and message
+                    ):
+                        operation["messages"].append(
+                            message
+                        )
+
+                elif message:
+                    operation["messages"].append(
+                        message
+                    )
+
+            else:
+                message = str(event)
+
+                operation["message"] = message
+                operation["messages"].append(
+                    message
+                )
+
+    progress.tapebox_structured_progress = True
+
+    try:
+        result = restore_selected_files(
+            file_ids,
+            Path(destination),
+            progress=progress,
+        )
+
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS[
+                operation_id
+            ]
+
+            operation["result"] = result
+
+            if result.get("success"):
+                if result.get(
+                    "completed",
+                    False,
+                ):
+                    operation["status"] = (
+                        "completed"
+                    )
+
+                    operation["message"] = (
+                        "Restore complete."
+                    )
+
+                else:
+                    operation["status"] = (
+                        "waiting_for_tape"
+                    )
+
+                    operation["message"] = (
+                        "Insert the next required "
+                        "cartridge."
+                    )
+
+            elif result.get("wrong_tape"):
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+
+                operation["message"] = (
+                    result.get(
+                        "error",
+                        "Wrong cartridge inserted.",
+                    )
+                )
+
+            else:
+                operation["status"] = "failed"
+
+                operation["message"] = (
+                    result.get(
+                        "error",
+                        "Restore failed.",
+                    )
+                )
+
+    except Exception as exc:
+        result = {
+            "success": False,
+            "error": str(exc),
+        }
+
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS[
+                operation_id
+            ]
+
+            operation["result"] = result
+            operation["status"] = "failed"
+            operation["message"] = str(exc)
 
     finally:
         with OPERATION_STATE_LOCK:
@@ -959,6 +1121,189 @@ def operation_status(operation_id):
     )
 
 
+@app.route(
+    "/api/operations/<operation_id>/resume",
+    methods=["POST"],
+)
+def operation_resume_api(operation_id):
+    """
+    Resume a selected-file restore that is waiting for the
+    next cartridge.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    inspector_mount = Path(
+        "/mnt/tapebox/ltfs-inspect"
+    )
+
+    if _is_mounted(inspector_mount):
+        return jsonify(
+            {
+                "success": False,
+                "busy": True,
+                "error": (
+                    "Tape Inspector currently owns "
+                    "the tape drive. Unmount and eject "
+                    "the Inspector cartridge first."
+                ),
+            }
+        ), 409
+
+    with OPERATION_STATE_LOCK:
+        operation = OPERATIONS.get(
+            operation_id
+        )
+
+        if operation is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Operation not found.",
+                }
+            ), 404
+
+        if (
+            operation.get("type")
+            != "restore_selected"
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "This operation cannot be "
+                        "resumed here."
+                    ),
+                }
+            ), 409
+
+        if (
+            operation.get("status")
+            != "waiting_for_tape"
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Restore is not waiting "
+                        "for a cartridge."
+                    ),
+                }
+            ), 409
+
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "already running."
+                    ),
+                    "operation": (
+                        _operation_snapshot(active)
+                        if active
+                        else None
+                    ),
+                }
+            ), 409
+
+        file_ids = list(
+            operation.get(
+                "file_ids",
+                [],
+            )
+        )
+
+        destination = str(
+            operation["destination"]
+        )
+
+        if not file_ids:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Restore operation has no "
+                        "selected files."
+                    ),
+                }
+            ), 409
+
+        operation["status"] = "starting"
+        operation["message"] = (
+            "Continuing restore..."
+        )
+        operation["messages"].append(
+            "Continuing restore..."
+        )
+        operation["transfer"] = None
+        operation["result"] = None
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_id
+        )
+
+    worker = threading.Thread(
+        target=_selected_restore_worker,
+        args=(
+            operation_id,
+            file_ids,
+            destination,
+        ),
+        daemon=True,
+        name=(
+            f"tapebox-selected-restore-"
+            f"{operation_id[:8]}"
+        ),
+    )
+
+    try:
+        worker.start()
+
+    except Exception as exc:
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is not None:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+                operation["message"] = str(exc)
+                operation["result"] = {
+                    "success": False,
+                    "error": str(exc),
+                }
+
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = (
+                    None
+                )
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "operation_id": operation_id,
+        }
+    )
+
+
 @app.route("/api/tape/status")
 def tape_status_api():
     #
@@ -1418,6 +1763,236 @@ def files_restore_plan_api():
             "total_bytes": total_bytes,
             "files": planned_files,
             "required_tapes": required_tapes,
+        }
+    )
+
+
+@app.route(
+    "/api/files/restore-start",
+    methods=["POST"],
+)
+def files_restore_start_api():
+    """
+    Start or continue a restore of arbitrary selected catalog files.
+
+    The configured TapeBox restore directory is used as the
+    destination. Only one physical tape operation may run at once.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    initialize_database()
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    raw_file_ids = payload.get(
+        "file_ids",
+        [],
+    )
+
+    if not isinstance(raw_file_ids, list):
+        return jsonify(
+            {
+                "success": False,
+                "error": "file_ids must be a list.",
+            }
+        ), 400
+
+    file_ids = []
+
+    for value in raw_file_ids:
+        try:
+            file_id = int(value)
+        except (TypeError, ValueError):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"Invalid file ID: {value}"
+                    ),
+                }
+            ), 400
+
+        if file_id <= 0:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"Invalid file ID: {value}"
+                    ),
+                }
+            ), 400
+
+        if file_id not in file_ids:
+            file_ids.append(
+                file_id
+            )
+
+    if not file_ids:
+        return jsonify(
+            {
+                "success": False,
+                "error": "No files were selected.",
+            }
+        ), 400
+
+    #
+    # Validate that every requested catalog row exists before
+    # claiming the tape operation lock.
+    #
+    for file_id in file_ids:
+        if get_file_by_id(file_id) is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"File ID {file_id} "
+                        "does not exist."
+                    ),
+                }
+            ), 404
+
+    destination = get_setting(
+        "restore_directory",
+        "/mnt/tapebox/restored",
+    )
+
+    destination_path = Path(
+        destination
+    )
+
+    if not destination_path.is_absolute():
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Configured restore directory must "
+                    "be an absolute path."
+                ),
+            }
+        ), 500
+
+    #
+    # Tape Inspector may own the physical drive independently of
+    # the in-memory operation state, so its mounted filesystem is
+    # authoritative.
+    #
+    inspector_mount = Path(
+        "/mnt/tapebox/ltfs-inspect"
+    )
+
+    if _is_mounted(inspector_mount):
+        return jsonify(
+            {
+                "success": False,
+                "busy": True,
+                "error": (
+                    "Tape Inspector currently owns "
+                    "the tape drive. Unmount and eject "
+                    "the Inspector cartridge first."
+                ),
+                "operation": None,
+            }
+        ), 409
+
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "already running."
+                    ),
+                    "operation": (
+                        _operation_snapshot(active)
+                        if active
+                        else None
+                    ),
+                }
+            ), 409
+
+        operation_id = uuid.uuid4().hex
+
+        operation = {
+            "id": operation_id,
+            "type": "restore_selected",
+            "job_id": None,
+            "file_ids": list(file_ids),
+            "destination": str(
+                destination_path
+            ),
+            "status": "starting",
+            "message": "Starting restore...",
+            "messages": [
+                "Starting restore..."
+            ],
+            "transfer": None,
+            "result": None,
+        }
+
+        OPERATIONS[operation_id] = operation
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_id
+        )
+
+    worker = threading.Thread(
+        target=_selected_restore_worker,
+        args=(
+            operation_id,
+            list(file_ids),
+            str(destination_path),
+        ),
+        daemon=True,
+        name=(
+            f"tapebox-selected-restore-"
+            f"{operation_id[:8]}"
+        ),
+    )
+
+    try:
+        worker.start()
+
+    except Exception as exc:
+        with OPERATION_STATE_LOCK:
+            operation["status"] = "failed"
+            operation["message"] = str(exc)
+            operation["result"] = {
+                "success": False,
+                "error": str(exc),
+            }
+
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = (
+                    None
+                )
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "operation_id": operation_id,
+            "file_count": len(file_ids),
+            "destination": str(
+                destination_path
+            ),
         }
     )
 

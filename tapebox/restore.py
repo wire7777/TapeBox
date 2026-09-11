@@ -1901,15 +1901,7 @@ def restore_archive_job(
     progress=None,
 ):
     """
-    Restore all possible files from an archive job using the
-    currently loaded tape.
-
-    The command is resumable:
-      - already-restored files are SHA256 checked and skipped
-      - files on the currently loaded tape are restored together
-      - another invocation continues after the next tape is loaded
-      - existing mismatched files are never overwritten
-      - every newly restored file is SHA256 verified
+    Restore every cataloged file belonging to one archive job.
     """
 
     from tapebox.database import get_archive_restore_plan
@@ -1926,14 +1918,117 @@ def restore_archive_job(
             ),
         }
 
-    files = plan["files"]
-    job = plan["job"]
+    return _restore_catalog_files(
+        plan["files"],
+        destination,
+        progress=progress,
+        job_id=job_id,
+        source_path=plan["job"]["source_path"],
+    )
+
+
+def restore_selected_files(
+    file_ids,
+    destination,
+    progress=None,
+):
+    """
+    Restore an arbitrary selection of catalog file IDs.
+
+    Files may come from different archive jobs. The same resumable
+    tape, spanning, checksum, mount, unmount, and eject machinery
+    used by archive-job restores performs the actual work.
+    """
+
+    normalized_ids = []
+
+    for value in file_ids or []:
+        try:
+            file_id = int(value)
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid file ID: {value}"
+                ),
+            }
+
+        if file_id <= 0:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid file ID: {value}"
+                ),
+            }
+
+        if file_id not in normalized_ids:
+            normalized_ids.append(
+                file_id
+            )
+
+    if not normalized_ids:
+        return {
+            "success": False,
+            "error": "No files were selected.",
+        }
+
+    files = []
+
+    for file_id in normalized_ids:
+        row = get_file_by_id(
+            file_id
+        )
+
+        if row is None:
+            return {
+                "success": False,
+                "error": (
+                    f"File ID {file_id} does not exist."
+                ),
+            }
+
+        files.append(
+            row
+        )
+
+    return _restore_catalog_files(
+        files,
+        destination,
+        progress=progress,
+        job_id=None,
+        source_path="Selected catalog files",
+    )
+
+
+def _restore_catalog_files(
+    files,
+    destination,
+    progress=None,
+    job_id=None,
+    source_path=None,
+):
+    """
+    Restore a supplied collection of cataloged files using the
+    currently loaded tape.
+
+    This is the shared restore engine used by archive-job restores
+    and arbitrary selected-file restores.
+
+    The command is resumable:
+      - already-restored files are SHA256 checked and skipped
+      - files on the currently loaded tape are restored together
+      - another invocation continues after the next tape is loaded
+      - existing mismatched files are never overwritten
+      - every newly restored file is SHA256 verified
+    """
+
+    files = list(files or [])
 
     if not files:
         return {
             "success": False,
             "error": (
-                f"Archive job {job_id} contains no cataloged files."
+                "Restore selection contains no cataloged files."
             ),
         }
 
@@ -2041,7 +2136,7 @@ def restore_archive_job(
             "success": True,
             "completed": True,
             "job_id": job_id,
-            "source_path": job["source_path"],
+            "source_path": source_path,
             "destination": str(destination),
             "files_total": len(files),
             "files_completed": len(files),
@@ -2154,7 +2249,7 @@ def restore_archive_job(
             return {
                 "success": False,
                 "job_id": job_id,
-                "source_path": job["source_path"],
+                "source_path": source_path,
                 "destination": str(destination),
                 "error": finalize_result.get(
                     "error",
@@ -2194,7 +2289,7 @@ def restore_archive_job(
             "success": True,
             "completed": True,
             "job_id": job_id,
-            "source_path": job["source_path"],
+            "source_path": source_path,
             "destination": str(destination),
             "files_total": len(files),
             "files_completed": len(files),
@@ -2386,7 +2481,7 @@ def restore_archive_job(
                 "required_tapes": required,
                 "error": (
                     "Loaded tape is not required for the "
-                    "remaining files in this restore job."
+                    "remaining files in this restore."
                 ),
             }
 
@@ -2684,7 +2779,7 @@ def restore_archive_job(
                     len(still_remaining) == 0
                 ),
                 "job_id": job_id,
-                "source_path": job["source_path"],
+                "source_path": source_path,
                 "destination": str(destination),
                 "loaded_tape": (
                     loaded_name or "-"
