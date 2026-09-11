@@ -1916,6 +1916,216 @@ def _find_resumable_upload(
 
 
 @app.route(
+    "/api/staging/uploads/batch",
+    methods=["POST"],
+)
+def staging_batch_upload_api():
+    import os
+
+    root, _state_root = _upload_state_root()
+
+    files = request.files.getlist("files")
+    relative_paths = request.form.getlist(
+        "paths"
+    )
+
+    if not files:
+        return jsonify({
+            "success": False,
+            "error": "No files were supplied.",
+        }), 400
+
+    if len(files) != len(relative_paths):
+        return jsonify({
+            "success": False,
+            "error": (
+                "Batch file/path count mismatch."
+            ),
+        }), 400
+
+    if len(files) > 250:
+        return jsonify({
+            "success": False,
+            "error": (
+                "Batch contains too many files."
+            ),
+        }), 400
+
+    prepared = []
+
+    try:
+        #
+        # Validate the entire batch before writing.
+        #
+        for uploaded, path_value in zip(
+            files,
+            relative_paths,
+        ):
+            relative_path = (
+                _safe_upload_relative_path(
+                    path_value
+                )
+            )
+
+            destination = (
+                root / relative_path
+            ).resolve()
+
+            try:
+                destination.relative_to(root)
+            except ValueError:
+                raise ValueError(
+                    "Upload destination is outside "
+                    "the staging area."
+                )
+
+            uploaded.stream.seek(
+                0,
+                os.SEEK_END,
+            )
+            size = uploaded.stream.tell()
+            uploaded.stream.seek(0)
+
+            if destination.exists():
+                if not destination.is_file():
+                    raise ValueError(
+                        f"{relative_path.as_posix()} "
+                        "already exists and is not "
+                        "a file."
+                    )
+
+                existing_size = (
+                    destination.stat().st_size
+                )
+
+                if existing_size != size:
+                    raise ValueError(
+                        f"{relative_path.as_posix()} "
+                        "already exists with a "
+                        "different size."
+                    )
+
+                prepared.append((
+                    uploaded,
+                    relative_path,
+                    destination,
+                    size,
+                    True,
+                ))
+
+                continue
+
+            prepared.append((
+                uploaded,
+                relative_path,
+                destination,
+                size,
+                False,
+            ))
+
+        uploaded_count = 0
+        skipped_count = 0
+        bytes_written = 0
+
+        for (
+            uploaded,
+            relative_path,
+            destination,
+            size,
+            already_exists,
+        ) in prepared:
+            if already_exists:
+                skipped_count += 1
+                continue
+
+            destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            temp_path = (
+                destination.parent
+                / (
+                    ".tapebox-upload-"
+                    + destination.name
+                    + ".part"
+                )
+            )
+
+            try:
+                with open(
+                    temp_path,
+                    "wb",
+                ) as handle:
+                    while True:
+                        block = (
+                            uploaded.stream.read(
+                                4 * 1024 * 1024
+                            )
+                        )
+
+                        if not block:
+                            break
+
+                        handle.write(block)
+                        bytes_written += len(
+                            block
+                        )
+
+                    handle.flush()
+
+                temp_path.replace(
+                    destination
+                )
+
+            except Exception:
+                try:
+                    temp_path.unlink(
+                        missing_ok=True
+                    )
+                except OSError:
+                    pass
+
+                raise
+
+            uploaded_count += 1
+
+        #
+        # One filesystem durability checkpoint
+        # for the completed batch instead of
+        # fsyncing every tiny file and metadata
+        # record individually.
+        #
+        sync_fd = os.open(
+            root,
+            os.O_RDONLY,
+        )
+
+        try:
+            os.fsync(sync_fd)
+        finally:
+            os.close(sync_fd)
+
+        return jsonify({
+            "success": True,
+            "uploaded": uploaded_count,
+            "skipped": skipped_count,
+            "bytes_written": bytes_written,
+            "files": len(files),
+        })
+
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+
+@app.route(
     "/api/staging/uploads/create",
     methods=["POST"],
 )
@@ -1963,13 +2173,36 @@ def staging_resumable_create_api():
         }), 400
 
     if destination.exists():
+        if not destination.is_file():
+            return jsonify({
+                "success": False,
+                "error": (
+                    f"{relative_path.as_posix()} "
+                    "already exists and is not a file."
+                ),
+            }), 409
+
+        existing_size = (
+            destination.stat().st_size
+        )
+
+        if existing_size != total_size:
+            return jsonify({
+                "success": False,
+                "error": (
+                    f"{relative_path.as_posix()} "
+                    "already exists with a different size."
+                ),
+            }), 409
+
         return jsonify({
-            "success": False,
-            "error": (
-                f"{relative_path.as_posix()} "
-                "already exists in staging."
+            "success": True,
+            "already_exists": True,
+            "relative_path": (
+                relative_path.as_posix()
             ),
-        }), 409
+            "size": existing_size,
+        })
 
     existing = _find_resumable_upload(
         state_root,

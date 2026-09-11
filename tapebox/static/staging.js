@@ -949,6 +949,138 @@ window.monitorTapeBoxArchiveOperation =
     }
 
 
+    const SMALL_FILE_LIMIT =
+        16 * 1024 * 1024;
+
+    const BATCH_MAX_FILES = 250;
+    const BATCH_MAX_BYTES =
+        64 * 1024 * 1024;
+
+
+    function makeUploadBatches(files) {
+        const batches = [];
+
+        let current = [];
+        let currentBytes = 0;
+
+        for (const file of files) {
+            const size =
+                Number(
+                    file.size || 0
+                );
+
+            if (
+                current.length
+                && (
+                    current.length
+                        >= BATCH_MAX_FILES
+                    || currentBytes + size
+                        > BATCH_MAX_BYTES
+                )
+            ) {
+                batches.push(current);
+                current = [];
+                currentBytes = 0;
+            }
+
+            current.push(file);
+            currentBytes += size;
+        }
+
+        if (current.length) {
+            batches.push(current);
+        }
+
+        return batches;
+    }
+
+
+    async function uploadSmallFileBatch(
+        files,
+        completedBytes,
+        totalBytes
+    ) {
+        const formData =
+            new FormData();
+
+        let batchBytes = 0;
+
+        for (const file of files) {
+            const relativePath =
+                file.webkitRelativePath
+                || file.name;
+
+            formData.append(
+                "files",
+                file,
+                file.name
+            );
+
+            formData.append(
+                "paths",
+                relativePath
+            );
+
+            batchBytes +=
+                Number(
+                    file.size || 0
+                );
+        }
+
+        if (message) {
+            message.textContent =
+                `Uploading ${
+                    files.length
+                } small files...`;
+        }
+
+        const response =
+            await fetch(
+                "/api/staging/uploads/batch",
+                {
+                    method: "POST",
+                    body: formData,
+                }
+            );
+
+        const data =
+            await responseJson(
+                response
+            );
+
+        if (
+            !response.ok
+            || !data
+            || !data.success
+        ) {
+            throw new Error(
+                data && data.error
+                    ? data.error
+                    : "Batch upload failed."
+            );
+        }
+
+        setProgress(
+            completedBytes + batchBytes,
+            totalBytes
+        );
+
+        return {
+            bytes: batchBytes,
+            files: files.length,
+            uploaded:
+                Number(
+                    data.uploaded || 0
+                ),
+            skipped:
+                Number(
+                    data.skipped || 0
+                ),
+        };
+    }
+
+
+
     async function uploadOneFile(
         file,
         fileNumber,
@@ -965,6 +1097,27 @@ window.monitorTapeBoxArchiveOperation =
 
         const created =
             await createUpload(file);
+
+        if (
+            created.already_exists
+        ) {
+            if (message) {
+                message.textContent =
+                    `Already present ${fileNumber} of ${
+                        fileCount
+                    }: ${file.name}`;
+            }
+
+            setProgress(
+                completedBytes + file.size,
+                totalBytes
+            );
+
+            return {
+                skipped: true,
+                alreadyExists: true,
+            };
+        }
 
         const upload =
             created.upload || {};
@@ -1125,7 +1278,31 @@ window.monitorTapeBoxArchiveOperation =
                 0
             );
 
+        const smallFiles =
+            selected.filter(
+                file =>
+                    Number(
+                        file.size || 0
+                    )
+                    <= SMALL_FILE_LIMIT
+            );
+
+        const largeFiles =
+            selected.filter(
+                file =>
+                    Number(
+                        file.size || 0
+                    )
+                    > SMALL_FILE_LIMIT
+            );
+
+        const batches =
+            makeUploadBatches(
+                smallFiles
+            );
+
         let completedBytes = 0;
+        let completedFiles = 0;
 
         if (status) {
             status.style.display =
@@ -1143,17 +1320,48 @@ window.monitorTapeBoxArchiveOperation =
         folderInput.disabled = true;
 
         try {
+            for (const batch of batches) {
+                const result =
+                    await uploadSmallFileBatch(
+                        batch,
+                        completedBytes,
+                        totalBytes
+                    );
+
+                completedBytes +=
+                    result.bytes;
+
+                completedFiles +=
+                    result.files;
+
+                setProgress(
+                    completedBytes,
+                    totalBytes
+                );
+
+                if (message) {
+                    message.textContent =
+                        `Uploaded ${
+                            completedFiles
+                        } of ${
+                            selected.length
+                        } files`;
+                }
+            }
+
             for (
                 let index = 0;
-                index < selected.length;
+                index < largeFiles.length;
                 index++
             ) {
                 const file =
-                    selected[index];
+                    largeFiles[index];
 
                 await uploadOneFile(
                     file,
-                    index + 1,
+                    completedFiles
+                        + index
+                        + 1,
                     selected.length,
                     completedBytes,
                     totalBytes
@@ -1196,7 +1404,7 @@ window.monitorTapeBoxArchiveOperation =
                         selected.length === 1
                             ? ""
                             : "s"
-                    } verified.`;
+                    }.`;
             }
 
             window.setTimeout(
@@ -1212,16 +1420,16 @@ window.monitorTapeBoxArchiveOperation =
                     `Upload paused: ${
                         error.message
                         || "Unknown error."
-                    } Re-select the same file to resume.`;
+                    }`;
             }
+
+        } finally {
+            uploadActive = false;
 
             browse.disabled = false;
             folderBrowse.disabled = false;
             input.disabled = false;
             folderInput.disabled = false;
-            input.value = "";
-            folderInput.value = "";
-            uploadActive = false;
         }
     }
 
