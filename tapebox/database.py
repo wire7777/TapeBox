@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +135,26 @@ def initialize_database():
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS restore_operations (
+                id TEXT PRIMARY KEY,
+                operation_type TEXT NOT NULL,
+                file_ids_json TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                transfer_json TEXT,
+                result_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_restore_operations_status
+            ON restore_operations(status);
+
+            CREATE INDEX IF NOT EXISTS idx_restore_operations_updated_at
+            ON restore_operations(updated_at);
 
             CREATE INDEX IF NOT EXISTS idx_files_filename
             ON files(filename);
@@ -2654,3 +2675,284 @@ def record_spanned_file_part(
         )
 
         return file_id
+
+
+def _restore_operation_from_row(row):
+    """
+    Convert one restore_operations row to normal operation state.
+    """
+
+    if row is None:
+        return None
+
+    def load_json(value, default):
+        if value is None:
+            return default
+
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "id": row["id"],
+        "type": row["operation_type"],
+        "job_id": None,
+        "file_ids": load_json(
+            row["file_ids_json"],
+            [],
+        ),
+        "destination": row["destination"],
+        "status": row["status"],
+        "message": row["message"],
+        "messages": load_json(
+            row["messages_json"],
+            [],
+        ),
+        "transfer": load_json(
+            row["transfer_json"],
+            None,
+        ),
+        "result": load_json(
+            row["result_json"],
+            None,
+        ),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def save_restore_operation(operation):
+    """
+    Create or update one persistent selected-file restore operation.
+    """
+
+    if not isinstance(operation, dict):
+        raise TypeError(
+            "Restore operation must be a dictionary."
+        )
+
+    operation_id = str(
+        operation.get("id", "")
+    ).strip()
+
+    if not operation_id:
+        raise ValueError(
+            "Restore operation ID cannot be empty."
+        )
+
+    operation_type = str(
+        operation.get(
+            "type",
+            "restore_selected",
+        )
+    ).strip()
+
+    if operation_type != "restore_selected":
+        raise ValueError(
+            "Only selected-file restore operations "
+            "may be persisted here."
+        )
+
+    file_ids = [
+        int(value)
+        for value in operation.get(
+            "file_ids",
+            [],
+        )
+    ]
+
+    destination = str(
+        operation.get(
+            "destination",
+            "",
+        )
+    )
+
+    status = str(
+        operation.get(
+            "status",
+            "",
+        )
+    )
+
+    message = str(
+        operation.get(
+            "message",
+            "",
+        )
+    )
+
+    messages = list(
+        operation.get(
+            "messages",
+            [],
+        )
+    )
+
+    now = utc_now()
+
+    with connect() as db:
+        existing = db.execute(
+            """
+            SELECT created_at
+            FROM restore_operations
+            WHERE id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+
+        created_at = (
+            existing["created_at"]
+            if existing is not None
+            else now
+        )
+
+        db.execute(
+            """
+            INSERT INTO restore_operations (
+                id,
+                operation_type,
+                file_ids_json,
+                destination,
+                status,
+                message,
+                messages_json,
+                transfer_json,
+                result_json,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                operation_type = excluded.operation_type,
+                file_ids_json = excluded.file_ids_json,
+                destination = excluded.destination,
+                status = excluded.status,
+                message = excluded.message,
+                messages_json = excluded.messages_json,
+                transfer_json = excluded.transfer_json,
+                result_json = excluded.result_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                operation_id,
+                operation_type,
+                json.dumps(
+                    file_ids,
+                    separators=(",", ":"),
+                ),
+                destination,
+                status,
+                message,
+                json.dumps(
+                    messages,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+                (
+                    json.dumps(
+                        operation.get("transfer"),
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    if operation.get("transfer")
+                    is not None
+                    else None
+                ),
+                (
+                    json.dumps(
+                        operation.get("result"),
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    if operation.get("result")
+                    is not None
+                    else None
+                ),
+                created_at,
+                now,
+            ),
+        )
+
+
+def get_restore_operation(operation_id):
+    """
+    Return one persistent selected-file restore operation.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT *
+            FROM restore_operations
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (str(operation_id),),
+        ).fetchone()
+
+    return _restore_operation_from_row(
+        row
+    )
+
+
+def get_latest_restore_operation():
+    """
+    Return the most recently updated selected-file restore operation.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT *
+            FROM restore_operations
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    return _restore_operation_from_row(
+        row
+    )
+
+
+def get_latest_resumable_restore_operation():
+    """
+    Return the most recently updated unfinished selected-file restore.
+    """
+
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT *
+            FROM restore_operations
+            WHERE operation_type = 'restore_selected'
+              AND status IN (
+                  'starting',
+                  'running',
+                  'waiting_for_tape'
+              )
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    return _restore_operation_from_row(
+        row
+    )
+
+
+def delete_restore_operation(operation_id):
+    """
+    Delete one persistent restore operation.
+    """
+
+    with connect() as db:
+        db.execute(
+            """
+            DELETE FROM restore_operations
+            WHERE id = ?
+            """,
+            (str(operation_id),),
+        )

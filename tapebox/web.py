@@ -40,6 +40,9 @@ from tapebox.database import (
     backup_catalog,
     validate_catalog_database,
     restore_catalog,
+    save_restore_operation,
+    get_restore_operation,
+    get_latest_resumable_restore_operation,
     DB_PATH,
     BACKUP_DIR,
 )
@@ -84,6 +87,29 @@ OPERATIONS = {}
 ACTIVE_TAPE_OPERATION_ID = None
 
 
+def _persist_selected_restore(operation):
+    """
+    Persist selected-file restore state without allowing a
+    catalog persistence error to interrupt tape I/O.
+    """
+
+    if (
+        not operation
+        or operation.get("type")
+        != "restore_selected"
+    ):
+        return
+
+    try:
+        save_restore_operation(operation)
+
+    except Exception as exc:
+        print(
+            "WARNING: Could not persist selected "
+            f"restore operation: {exc}"
+        )
+
+
 def _operation_snapshot(operation):
     """
     Return a JSON-safe copy of operation state.
@@ -93,6 +119,12 @@ def _operation_snapshot(operation):
         "id": operation["id"],
         "type": operation["type"],
         "job_id": operation["job_id"],
+        "file_ids": list(
+            operation.get(
+                "file_ids",
+                [],
+            )
+        ),
         "destination": operation["destination"],
         "status": operation["status"],
         "message": operation["message"],
@@ -204,9 +236,18 @@ def _restore_worker(
                         "completed"
                     )
 
-                    operation["message"] = (
-                        "Restore complete."
-                    )
+                    if result.get(
+                        "already_restored",
+                        False,
+                    ):
+                        operation["message"] = (
+                            "Already restored — existing "
+                            "file matches the TapeBox catalog."
+                        )
+                    else:
+                        operation["message"] = (
+                            "Restore complete."
+                        )
 
                 else:
                     operation["status"] = (
@@ -292,7 +333,11 @@ def _selected_restore_worker(
 
     global ACTIVE_TAPE_OPERATION_ID
 
+    last_persist_at = 0.0
+
     def progress(event):
+        nonlocal last_persist_at
+
         with OPERATION_STATE_LOCK:
             operation = OPERATIONS.get(
                 operation_id
@@ -343,6 +388,29 @@ def _selected_restore_worker(
                 operation["messages"].append(
                     message
                 )
+
+            event_type = (
+                event.get("type")
+                if isinstance(event, dict)
+                else None
+            )
+
+            now = time.monotonic()
+
+            should_persist = (
+                event_type != "transfer"
+                or (
+                    now - last_persist_at
+                    >= 5.0
+                )
+            )
+
+            if should_persist:
+                _persist_selected_restore(
+                    operation
+                )
+
+                last_persist_at = now
 
     progress.tapebox_structured_progress = True
 
@@ -405,6 +473,10 @@ def _selected_restore_worker(
                     )
                 )
 
+            _persist_selected_restore(
+                operation
+            )
+
     except Exception as exc:
         result = {
             "success": False,
@@ -419,6 +491,10 @@ def _selected_restore_worker(
             operation["result"] = result
             operation["status"] = "failed"
             operation["message"] = str(exc)
+
+            _persist_selected_restore(
+                operation
+            )
 
     finally:
         with OPERATION_STATE_LOCK:
@@ -1100,14 +1176,43 @@ def operation_status(operation_id):
         )
 
         if operation is None:
-            return jsonify(
-                {
-                    "success": False,
-                    "error": (
-                        "Operation not found."
-                    ),
-                }
-            ), 404
+            operation = get_restore_operation(
+                operation_id
+            )
+
+            if operation is None:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "Operation not found."
+                        ),
+                    }
+                ), 404
+
+            if operation.get("status") in {
+                "starting",
+                "running",
+            }:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+                operation["message"] = (
+                    "Restore was interrupted. "
+                    "Continue restore when ready."
+                )
+                operation["messages"].append(
+                    "TapeBox restarted during "
+                    "the restore."
+                )
+
+                _persist_selected_restore(
+                    operation
+                )
+
+            OPERATIONS[operation_id] = (
+                operation
+            )
 
         snapshot = _operation_snapshot(
             operation
@@ -1156,12 +1261,41 @@ def operation_resume_api(operation_id):
         )
 
         if operation is None:
-            return jsonify(
-                {
-                    "success": False,
-                    "error": "Operation not found.",
-                }
-            ), 404
+            operation = get_restore_operation(
+                operation_id
+            )
+
+            if operation is None:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Operation not found.",
+                    }
+                ), 404
+
+            if operation.get("status") in {
+                "starting",
+                "running",
+            }:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+                operation["message"] = (
+                    "Restore was interrupted. "
+                    "Continue restore when ready."
+                )
+                operation["messages"].append(
+                    "TapeBox restarted during "
+                    "the restore."
+                )
+
+                _persist_selected_restore(
+                    operation
+                )
+
+            OPERATIONS[operation_id] = (
+                operation
+            )
 
         if (
             operation.get("type")
@@ -1246,6 +1380,10 @@ def operation_resume_api(operation_id):
 
         ACTIVE_TAPE_OPERATION_ID = (
             operation_id
+        )
+
+        _persist_selected_restore(
+            operation
         )
 
     worker = threading.Thread(
@@ -1768,6 +1906,121 @@ def files_restore_plan_api():
 
 
 @app.route(
+    "/api/files/restore-active"
+)
+def files_restore_active_api():
+    """
+    Return the current or most recent unfinished selected-file restore.
+
+    This endpoint never starts or resumes tape hardware activity.
+    """
+
+    initialize_database()
+
+    operation = None
+
+    #
+    # Prefer a genuinely active in-memory selected restore.
+    # Do not interpret its persisted "running" state as an
+    # interruption while the worker is actually alive.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            if (
+                active
+                and active.get("type")
+                == "restore_selected"
+                and active.get("status")
+                in {
+                    "starting",
+                    "running",
+                    "waiting_for_tape",
+                }
+            ):
+                operation = active
+
+        if operation is not None:
+            snapshot = _operation_snapshot(
+                operation
+            )
+
+            return jsonify(
+                {
+                    "success": True,
+                    "operation": snapshot,
+                }
+            )
+
+    #
+    # Nothing is actively running in memory. Look for a durable
+    # unfinished selected restore left from an earlier process.
+    #
+    operation = (
+        get_latest_resumable_restore_operation()
+    )
+
+    if operation is None:
+        return jsonify(
+            {
+                "success": True,
+                "operation": None,
+            }
+        )
+
+    #
+    # A persisted starting/running state with no matching active
+    # in-memory worker means Flask/TapeBox restarted mid-restore.
+    # Make it explicitly resumable instead of auto-starting I/O.
+    #
+    if operation.get("status") in {
+        "starting",
+        "running",
+    }:
+        operation["status"] = (
+            "waiting_for_tape"
+        )
+
+        operation["message"] = (
+            "Restore was interrupted. "
+            "Continue restore when ready."
+        )
+
+        restart_message = (
+            "TapeBox restarted during "
+            "the restore."
+        )
+
+        if restart_message not in operation["messages"]:
+            operation["messages"].append(
+                restart_message
+            )
+
+        _persist_selected_restore(
+            operation
+        )
+
+    with OPERATION_STATE_LOCK:
+        OPERATIONS[
+            operation["id"]
+        ] = operation
+
+        snapshot = _operation_snapshot(
+            operation
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "operation": snapshot,
+        }
+    )
+
+
+@app.route(
     "/api/files/restore-start",
     methods=["POST"],
 )
@@ -1944,6 +2197,10 @@ def files_restore_start_api():
             operation_id
         )
 
+        _persist_selected_restore(
+            operation
+        )
+
     worker = threading.Thread(
         target=_selected_restore_worker,
         args=(
@@ -1977,6 +2234,10 @@ def files_restore_start_api():
                 ACTIVE_TAPE_OPERATION_ID = (
                     None
                 )
+
+            _persist_selected_restore(
+                operation
+            )
 
         return jsonify(
             {

@@ -33,6 +33,8 @@
     let plannedFileIds = [];
     let activeOperationId = null;
     let operationPollTimer = null;
+    let driveReadinessTimer = null;
+    let restoreCompleted = false;
 
     if (
         !selectAllButton
@@ -114,6 +116,8 @@
         if (activeOperationId) {
             return;
         }
+
+        restoreCompleted = false;
 
         const selected =
             selectedCheckboxes();
@@ -253,6 +257,16 @@
                     <strong>Destination:</strong>
                     Restored Files
                 </div>
+
+                <div
+                    id="files-drive-readiness"
+                    style="
+                        margin-top: 10px;
+                    "
+                >
+                    <strong>Drive status:</strong>
+                    Checking...
+                </div>
             </div>
 
             <div
@@ -264,8 +278,9 @@
                     type="button"
                     id="files-start-restore-button"
                     class="button"
+                    disabled
                 >
-                    Start Restore
+                    Checking Drive...
                 </button>
             </div>
 
@@ -291,6 +306,136 @@
                 "click",
                 startSelectedRestore
             );
+        }
+
+        updateDriveReadiness();
+    }
+
+
+    async function updateDriveReadiness() {
+        if (driveReadinessTimer) {
+            clearTimeout(
+                driveReadinessTimer
+            );
+
+            driveReadinessTimer = null;
+        }
+
+        /*
+         * An active restore owns the button state. Do not let
+         * background drive polling overwrite Restoring/Waiting/
+         * Restore Complete states.
+         */
+        if (
+            activeOperationId
+            || restoreCompleted
+        ) {
+            return;
+        }
+
+        const statusElement =
+            document.getElementById(
+                "files-drive-readiness"
+            );
+
+        const startButton =
+            document.getElementById(
+                "files-start-restore-button"
+            );
+
+        if (
+            !statusElement
+            || !startButton
+        ) {
+            return;
+        }
+
+        try {
+            const response =
+                await fetch(
+                    "/api/tape/status"
+                );
+
+            const data =
+                await response.json();
+
+            if (
+                activeOperationId
+                || restoreCompleted
+            ) {
+                return;
+            }
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Unable to read tape drive status."
+                );
+            }
+
+            const ready =
+                Boolean(
+                    data.detected
+                    && data.available
+                    && data.online
+                    && !data.mounted
+                );
+
+            if (ready) {
+                statusElement.innerHTML =
+                    "<strong>Drive status:</strong> Drive ready.";
+
+                startButton.disabled = false;
+                startButton.textContent =
+                    "Start Restore";
+
+            } else if (!data.detected) {
+                statusElement.innerHTML =
+                    "<strong>Drive status:</strong> "
+                    + "Tape drive not detected.";
+
+                startButton.disabled = true;
+                startButton.textContent =
+                    "Waiting for Drive...";
+
+            } else if (data.mounted) {
+                statusElement.innerHTML =
+                    "<strong>Drive status:</strong> "
+                    + "Tape drive is currently in use.";
+
+                startButton.disabled = true;
+                startButton.textContent =
+                    "Drive In Use...";
+
+            } else {
+                statusElement.innerHTML =
+                    "<strong>Drive status:</strong> "
+                    + "Waiting for cartridge to become ready...";
+
+                startButton.disabled = true;
+                startButton.textContent =
+                    "Waiting for Tape...";
+            }
+
+        } catch (error) {
+            statusElement.innerHTML =
+                "<strong>Drive status:</strong> "
+                + "Unable to read drive status.";
+
+            startButton.disabled = true;
+            startButton.textContent =
+                "Drive Status Error";
+        }
+
+        if (!activeOperationId) {
+            driveReadinessTimer =
+                setTimeout(
+                    updateDriveReadiness,
+                    2000
+                );
         }
     }
 
@@ -339,7 +484,7 @@
             ) {
                 startButton.disabled = true;
                 startButton.textContent =
-                    "Restore Complete";
+                    "Completed";
 
             } else if (
                 operation.status
@@ -494,6 +639,60 @@
             `;
         }
 
+        let alreadyRestoredHtml = "";
+
+        if (
+            operation.status === "completed"
+            && result.already_restored
+        ) {
+            const skipped =
+                Number(
+                    result.files_skipped
+                    ?? 0
+                );
+
+            alreadyRestoredHtml = `
+                <div
+                    style="
+                        margin-top: 12px;
+                        padding: 12px;
+                        border: 1px solid #2f6f4e;
+                        line-height: 1.6;
+                    "
+                >
+                    <div
+                        style="
+                            font-weight: 700;
+                        "
+                    >
+                        Already Restored
+                    </div>
+
+                    <div>
+                        The existing destination file
+                        matches the TapeBox catalog.
+                    </div>
+
+                    <div>
+                        No tape access was required.
+                    </div>
+
+                    ${
+                        skipped > 0
+                        ? `
+                            <div>
+                                <strong>
+                                    Files already restored:
+                                </strong>
+                                ${skipped}
+                            </div>
+                        `
+                        : ""
+                    }
+                </div>
+            `;
+        }
+
         let tapesHtml = "";
 
         const requiredTapes =
@@ -562,16 +761,18 @@
         }
 
         const recentMessages =
-            activityMessages
-                .slice(-8)
-                .map(
-                    message => `
-                        <div>
-                            ${escapeHtml(message)}
-                        </div>
-                    `
-                )
-                .join("");
+            operation.status === "completed"
+                ? ""
+                : activityMessages
+                    .slice(-8)
+                    .map(
+                        message => `
+                            <div>
+                                ${escapeHtml(message)}
+                            </div>
+                        `
+                    )
+                    .join("");
 
         container.innerHTML = `
             <div
@@ -600,6 +801,7 @@
                 )}
             </div>
 
+            ${alreadyRestoredHtml}
             ${transferHtml}
             ${tapesHtml}
 
@@ -779,9 +981,50 @@
                     operationPollTimer = null;
                 }
 
+                if (
+                    operation.status
+                    === "completed"
+                ) {
+                    restoreCompleted = true;
+
+                    if (driveReadinessTimer) {
+                        clearTimeout(
+                            driveReadinessTimer
+                        );
+
+                        driveReadinessTimer = null;
+                    }
+
+                    for (
+                        const checkbox
+                        of checkboxes()
+                    ) {
+                        checkbox.checked = false;
+                    }
+                }
+
                 setSelectionLocked(
                     false
                 );
+
+                if (
+                    operation.status
+                    === "completed"
+                ) {
+                    summary.textContent =
+                        "0 files selected · 0 B";
+
+                    clearAllButton.disabled =
+                        true;
+
+                    restoreSelectedButton.disabled =
+                        true;
+
+                    selectAllButton.disabled =
+                        checkboxes().length === 0;
+
+                    plannedFileIds = [];
+                }
 
                 const startButton =
                     document.getElementById(
@@ -795,12 +1038,19 @@
                     ) {
                         startButton.disabled = true;
                         startButton.textContent =
-                            "Restore Complete";
+                            "Completed";
                     } else {
-                        startButton.disabled = false;
+                        startButton.disabled = true;
                         startButton.textContent =
-                            "Start Restore";
+                            "Checking Drive...";
                     }
+                }
+
+                if (
+                    operation.status
+                    === "failed"
+                ) {
+                    updateDriveReadiness();
                 }
 
                 return;
@@ -959,6 +1209,167 @@
     }
 
 
+    async function recoverActiveRestore() {
+        /*
+         * Reconnect the Files page to an unfinished selected-file
+         * restore after a browser refresh or TapeBox restart.
+         *
+         * Discovery and plan rebuilding are read-only. Tape activity
+         * does not resume until the user clicks Continue Restore.
+         */
+
+        setSelectionLocked(
+            true
+        );
+
+        try {
+            const response =
+                await fetch(
+                    "/api/files/restore-active"
+                );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Unable to check for an active restore."
+                );
+            }
+
+            const operation =
+                data.operation;
+
+            if (!operation) {
+                setSelectionLocked(
+                    false
+                );
+
+                updateSelection();
+
+                return;
+            }
+
+            const fileIds =
+                Array.isArray(
+                    operation.file_ids
+                )
+                ? operation.file_ids
+                    .map(
+                        value =>
+                            Number(value)
+                    )
+                    .filter(
+                        value =>
+                            Number.isInteger(value)
+                            && value > 0
+                    )
+                : [];
+
+            /*
+             * Restore visible checkbox selection where possible.
+             * A search/filter may mean some persisted files are not
+             * currently visible, so the restore plan itself still uses
+             * the complete persisted file ID list.
+             */
+            const selectedIdSet =
+                new Set(fileIds);
+
+            for (
+                const checkbox
+                of checkboxes()
+            ) {
+                checkbox.checked =
+                    selectedIdSet.has(
+                        Number(
+                            checkbox.dataset.fileId
+                        )
+                    );
+            }
+
+            /*
+             * Update the visible selection summary before marking the
+             * operation active. updateSelection intentionally refuses
+             * to alter UI state while an operation is active.
+             */
+            updateSelection();
+
+            if (!fileIds.length) {
+                throw new Error(
+                    "Recovered restore has no file IDs."
+                );
+            }
+
+            const planResponse =
+                await fetch(
+                    "/api/files/restore-plan",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+                        body: JSON.stringify({
+                            file_ids: fileIds
+                        })
+                    }
+                );
+
+            const planData =
+                await planResponse.json();
+
+            if (
+                !planResponse.ok
+                || !planData.success
+            ) {
+                throw new Error(
+                    planData.error
+                    || "Unable to rebuild restore plan."
+                );
+            }
+
+            plannedFileIds =
+                fileIds.slice();
+
+            renderPlan(
+                planData
+            );
+
+            activeOperationId =
+                operation.id;
+
+            setSelectionLocked(
+                true
+            );
+
+            renderOperation(
+                operation
+            );
+
+            await pollOperation();
+
+        } catch (error) {
+            activeOperationId =
+                null;
+
+            setSelectionLocked(
+                false
+            );
+
+            updateSelection();
+
+            console.error(
+                "Restore recovery failed:",
+                error
+            );
+        }
+    }
+
+
     async function calculateRestorePlan() {
         const fileIds =
             selectedFileIds();
@@ -1097,5 +1508,5 @@
     );
 
 
-    updateSelection();
+    recoverActiveRestore();
 })();

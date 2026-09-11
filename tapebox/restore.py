@@ -2135,6 +2135,7 @@ def _restore_catalog_files(
         return {
             "success": True,
             "completed": True,
+            "already_restored": True,
             "job_id": job_id,
             "source_path": source_path,
             "destination": str(destination),
@@ -2143,6 +2144,7 @@ def _restore_catalog_files(
             "files_restored_this_run": 0,
             "files_skipped": len(completed_ids),
             "bytes_restored_this_run": 0,
+            "required_tapes": [],
         }
 
     #
@@ -2460,15 +2462,28 @@ def _restore_catalog_files(
         )
 
         if not loaded_work:
+            #
+            # The mounted cartridge is not part of the remaining
+            # restore plan.
+            #
+            # Build required-tape reporting from tape_work rather
+            # than directly from the logical file rows.  Spanned
+            # parent rows intentionally have no tape_label or
+            # ltfs_uuid; their physical cartridge locations live
+            # in file_parts and are represented by tape_work.
+            #
             required = []
 
-            for row in remaining:
+            for work in tape_work.values():
                 label = (
-                    row["tape_label"]
-                    or row["ltfs_uuid"]
+                    work["tape_label"]
+                    or work["ltfs_uuid"]
                 )
 
-                if label not in required:
+                if (
+                    label
+                    and label not in required
+                ):
                     required.append(label)
 
             result = {
