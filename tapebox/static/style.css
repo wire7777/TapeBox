@@ -1577,6 +1577,60 @@ select option {
 }
 
 
+/* TapeBox confirmation dialog */
+
+.tapebox-confirm-panel {
+    width: min(520px, 100%);
+}
+
+.tapebox-confirm-panel
+.tapebox-modal-header {
+    margin-bottom: 16px;
+}
+
+.tapebox-confirm-panel
+.tapebox-modal-header p {
+    margin-top: 8px;
+    color: #c8d3e1;
+    line-height: 1.55;
+}
+
+.tapebox-confirm-warning {
+    background: #2a1518;
+    border-color: #6a2d35;
+    color: #ffb9bf;
+    font-weight: 600;
+}
+
+.tapebox-confirm-actions {
+    justify-content: flex-end;
+}
+
+.tapebox-confirm-cancel {
+    background: #172230;
+    border-color: #3b4a5d;
+}
+
+.tapebox-confirm-cancel:hover {
+    background: #202d3d;
+    border-color: #53647a;
+}
+
+.tapebox-danger-button {
+    background: #b93a42;
+    border-color: #d24a53;
+}
+
+.tapebox-danger-button:hover {
+    background: #ca454d;
+    border-color: #e05b63;
+}
+
+.tapebox-danger-button:active {
+    background: #9f3037;
+}
+
+
 /* Native hidden attribute must always win */
 [hidden] {
     display: none !important;

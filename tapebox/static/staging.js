@@ -1910,17 +1910,28 @@ window.monitorTapeBoxArchiveOperation =
 
             const count = paths.length;
 
-            const confirmed = window.confirm(
-                "Permanently delete "
-                + count
-                + (
-                    count === 1
-                    ? " selected item"
-                    : " selected items"
-                )
-                + " from Staging?\n\n"
-                + "This cannot be undone."
-            );
+            const confirmed =
+                await window.tapeboxConfirm({
+                    title:
+                        "Delete from Staging?",
+
+                    message:
+                        "Permanently delete "
+                        + count
+                        + (
+                            count === 1
+                            ? " selected item?"
+                            : " selected items?"
+                        ),
+
+                    warning:
+                        "This cannot be undone.",
+
+                    confirmText:
+                        "Delete",
+
+                    danger: true,
+                });
 
             if (!confirmed) {
                 return;

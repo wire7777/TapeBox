@@ -125,6 +125,230 @@
 
 </div>
 
+<div
+    id="tapebox-confirm-modal"
+    class="tapebox-modal"
+    hidden
+>
+    <div
+        class="tapebox-modal-panel tapebox-confirm-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tapebox-confirm-title"
+    >
+
+        <div class="tapebox-modal-header">
+            <div>
+                <h2 id="tapebox-confirm-title">
+                    Confirm
+                </h2>
+
+                <p id="tapebox-confirm-message">
+                </p>
+            </div>
+
+            <button
+                type="button"
+                id="tapebox-confirm-close"
+                class="tapebox-modal-close"
+                aria-label="Close"
+            >
+                ×
+            </button>
+        </div>
+
+
+        <div
+            id="tapebox-confirm-warning"
+            class="tapebox-modal-message tapebox-confirm-warning"
+            hidden
+        ></div>
+
+
+        <div class="tapebox-modal-actions tapebox-confirm-actions">
+
+            <button
+                type="button"
+                id="tapebox-confirm-cancel"
+                class="action-button tapebox-confirm-cancel"
+            >
+                Cancel
+            </button>
+
+            <button
+                type="button"
+                id="tapebox-confirm-ok"
+                class="action-button"
+            >
+                Confirm
+            </button>
+
+        </div>
+
+    </div>
+</div>
+
+
+<script>
+(() => {
+    const modal =
+        document.getElementById(
+            "tapebox-confirm-modal"
+        );
+
+    const title =
+        document.getElementById(
+            "tapebox-confirm-title"
+        );
+
+    const message =
+        document.getElementById(
+            "tapebox-confirm-message"
+        );
+
+    const warning =
+        document.getElementById(
+            "tapebox-confirm-warning"
+        );
+
+    const closeButton =
+        document.getElementById(
+            "tapebox-confirm-close"
+        );
+
+    const cancelButton =
+        document.getElementById(
+            "tapebox-confirm-cancel"
+        );
+
+    const confirmButton =
+        document.getElementById(
+            "tapebox-confirm-ok"
+        );
+
+    let resolver = null;
+
+
+    function finish(result) {
+        if (!resolver) {
+            return;
+        }
+
+        const resolve = resolver;
+        resolver = null;
+
+        modal.hidden = true;
+
+        resolve(result);
+    }
+
+
+    window.tapeboxConfirm =
+        function (options = {}) {
+            if (resolver) {
+                finish(false);
+            }
+
+            const dialogTitle =
+                options.title || "Confirm";
+
+            const dialogMessage =
+                options.message || "";
+
+            const dialogWarning =
+                options.warning || "";
+
+            const confirmText =
+                options.confirmText || "Confirm";
+
+            const cancelText =
+                options.cancelText || "Cancel";
+
+            const danger =
+                Boolean(options.danger);
+
+            title.textContent =
+                dialogTitle;
+
+            message.textContent =
+                dialogMessage;
+
+            warning.textContent =
+                dialogWarning;
+
+            warning.hidden =
+                !dialogWarning;
+
+            confirmButton.textContent =
+                confirmText;
+
+            cancelButton.textContent =
+                cancelText;
+
+            confirmButton.className =
+                danger
+                ? "action-button tapebox-danger-button"
+                : "action-button";
+
+            modal.hidden = false;
+
+            window.setTimeout(
+                () => {
+                    cancelButton.focus();
+                },
+                0
+            );
+
+            return new Promise(
+                resolve => {
+                    resolver = resolve;
+                }
+            );
+        };
+
+
+    closeButton.addEventListener(
+        "click",
+        () => finish(false)
+    );
+
+
+    cancelButton.addEventListener(
+        "click",
+        () => finish(false)
+    );
+
+
+    confirmButton.addEventListener(
+        "click",
+        () => finish(true)
+    );
+
+
+    modal.addEventListener(
+        "click",
+        event => {
+            if (event.target === modal) {
+                finish(false);
+            }
+        }
+    );
+
+
+    document.addEventListener(
+        "keydown",
+        event => {
+            if (
+                event.key === "Escape"
+                && !modal.hidden
+            ) {
+                finish(false);
+            }
+        }
+    );
+})();
+</script>
+
 {% block scripts %}
 {% endblock %}
 
