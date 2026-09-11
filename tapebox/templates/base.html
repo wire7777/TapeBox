@@ -290,11 +290,81 @@
                 ? "action-button tapebox-danger-button"
                 : "action-button";
 
+            cancelButton.hidden = false;
+
+            warning.className =
+                danger
+                ? "tapebox-modal-message tapebox-confirm-warning"
+                : "tapebox-modal-message";
+
             modal.hidden = false;
 
             window.setTimeout(
                 () => {
                     cancelButton.focus();
+                },
+                0
+            );
+
+            return new Promise(
+                resolve => {
+                    resolver = resolve;
+                }
+            );
+        };
+
+
+    window.tapeboxAlert =
+        function (options = {}) {
+            if (resolver) {
+                finish(false);
+            }
+
+            const dialogTitle =
+                options.title || "TapeBox";
+
+            const dialogMessage =
+                options.message || "";
+
+            const dialogType =
+                options.type || "info";
+
+            const buttonText =
+                options.buttonText || "OK";
+
+            title.textContent =
+                dialogTitle;
+
+            message.textContent = "";
+
+            warning.textContent =
+                dialogMessage;
+
+            warning.hidden =
+                !dialogMessage;
+
+            warning.className =
+                dialogType === "error"
+                ? "tapebox-modal-message error"
+                : (
+                    dialogType === "success"
+                    ? "tapebox-modal-message success"
+                    : "tapebox-modal-message"
+                );
+
+            cancelButton.hidden = true;
+
+            confirmButton.textContent =
+                buttonText;
+
+            confirmButton.className =
+                "action-button";
+
+            modal.hidden = false;
+
+            window.setTimeout(
+                () => {
+                    confirmButton.focus();
                 },
                 0
             );

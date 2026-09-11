@@ -264,17 +264,40 @@ document.addEventListener(
             button.dataset.path;
 
         if (!path) {
-            alert(
-                "TapeBox: Archive path is missing."
-            );
+            await window.tapeboxAlert({
+                title:
+                    "Archive Error",
+
+                message:
+                    "Archive path is missing.",
+
+                type:
+                    "error",
+            });
+
             return;
         }
 
-        if (
-            !confirm(
-                `Archive "${path}" to the currently loaded tape?`
-            )
-        ) {
+        const confirmed =
+            await window.tapeboxConfirm({
+                title:
+                    "Archive to Tape?",
+
+                message:
+                    `Archive "${path}" to the `
+                    + "currently loaded tape?",
+
+                warning:
+                    "TapeBox will begin writing "
+                    + "this item to tape.",
+
+                confirmText:
+                    "Archive",
+
+                danger: false,
+            });
+
+        if (!confirmed) {
             return;
         }
 
@@ -1987,10 +2010,17 @@ window.monitorTapeBoxArchiveOperation =
                 window.location.reload();
 
             } catch (error) {
-                alert(
-                    error.message
-                    || String(error)
-                );
+                await window.tapeboxAlert({
+                    title:
+                        "Delete Failed",
+
+                    message:
+                        error.message
+                        || String(error),
+
+                    type:
+                        "error",
+                });
 
                 deleteSelectedButton.textContent =
                     originalText;
@@ -2099,10 +2129,17 @@ window.monitorTapeBoxArchiveOperation =
                 );
 
             } catch (error) {
-                alert(
-                    error.message
-                    || String(error)
-                );
+                await window.tapeboxAlert({
+                    title:
+                        "Archive Failed",
+
+                    message:
+                        error.message
+                        || String(error),
+
+                    type:
+                        "error",
+                });
 
                 archiveSelectedButton.disabled =
                     false;

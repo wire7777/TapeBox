@@ -197,10 +197,17 @@ document.addEventListener(
             window.location.reload();
 
         } catch (error) {
-            alert(
-                error.message ||
-                String(error)
-            );
+            await window.tapeboxAlert({
+                title:
+                    "Cancel Job Failed",
+
+                message:
+                    error.message
+                    || String(error),
+
+                type:
+                    "error",
+            });
 
             button.disabled = false;
             button.textContent =

@@ -567,11 +567,25 @@
                 return;
             }
 
-            const confirmed = window.confirm(
-                "Restore this TapeBox database backup?\n\n"
-                + "A safety backup of the current database "
-                + "will be created first."
-            );
+            const confirmed =
+                await window.tapeboxConfirm({
+                    title:
+                        "Restore Database?",
+
+                    message:
+                        "Restore this TapeBox "
+                        + "database backup?",
+
+                    warning:
+                        "A safety backup of the "
+                        + "current database will "
+                        + "be created first.",
+
+                    confirmText:
+                        "Restore Database",
+
+                    danger: true,
+                });
 
             if (!confirmed) {
                 return;
