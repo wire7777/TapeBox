@@ -2956,3 +2956,148 @@ def delete_restore_operation(operation_id):
             """,
             (str(operation_id),),
         )
+
+
+def check_catalog_health(path=None):
+    """
+    Perform a read-only health check of the TapeBox catalog.
+
+    This function does not modify, vacuum, repair, rebuild,
+    or otherwise change the database.
+    """
+
+    database_path = Path(path or DB_PATH)
+
+    result = {
+        "success": False,
+        "healthy": False,
+        "path": str(database_path),
+        "size_bytes": 0,
+        "integrity": "unknown",
+        "foreign_keys": "unknown",
+        "journal_mode": "unknown",
+        "tables": {},
+        "missing_tables": [],
+        "error": None,
+    }
+
+    if not database_path.is_file():
+        result["error"] = (
+            f"Catalog database does not exist: "
+            f"{database_path}"
+        )
+        return result
+
+    try:
+        result["size_bytes"] = (
+            database_path.stat().st_size
+        )
+
+        db = sqlite3.connect(
+            f"file:{database_path}?mode=ro",
+            uri=True,
+            timeout=5.0,
+        )
+
+        db.row_factory = sqlite3.Row
+
+        integrity_rows = db.execute(
+            "PRAGMA integrity_check"
+        ).fetchall()
+
+        integrity_messages = [
+            row[0]
+            for row in integrity_rows
+        ]
+
+        result["integrity"] = (
+            "ok"
+            if integrity_messages == ["ok"]
+            else "; ".join(integrity_messages)
+        )
+
+        foreign_key_rows = db.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+
+        result["foreign_keys"] = (
+            "ok"
+            if not foreign_key_rows
+            else (
+                f"{len(foreign_key_rows)} "
+                "violation(s)"
+            )
+        )
+
+        result["journal_mode"] = (
+            db.execute(
+                "PRAGMA journal_mode"
+            ).fetchone()[0]
+        )
+
+        required_tables = {
+            "tapes",
+            "files",
+            "archive_jobs",
+            "file_parts",
+            "job_events",
+        }
+
+        optional_tables = {
+            "settings",
+            "restore_operations",
+        }
+
+        rows = db.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+            """
+        ).fetchall()
+
+        existing_tables = {
+            row["name"]
+            for row in rows
+        }
+
+        result["missing_tables"] = sorted(
+            required_tables - existing_tables
+        )
+
+        for table in sorted(
+            required_tables | optional_tables
+        ):
+            if table not in existing_tables:
+                result["tables"][table] = None
+                continue
+
+            #
+            # Table names here come only from the fixed
+            # allow-list above, never from user input.
+            #
+            count = db.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+
+            result["tables"][table] = count
+
+        result["healthy"] = (
+            result["integrity"] == "ok"
+            and result["foreign_keys"] == "ok"
+            and not result["missing_tables"]
+        )
+
+        result["success"] = True
+
+        return result
+
+    except (sqlite3.Error, OSError) as exc:
+        result["error"] = str(exc)
+        return result
+
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass

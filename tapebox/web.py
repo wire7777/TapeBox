@@ -40,6 +40,7 @@ from tapebox.database import (
     backup_catalog,
     validate_catalog_database,
     restore_catalog,
+    check_catalog_health,
     save_restore_operation,
     get_restore_operation,
     get_latest_resumable_restore_operation,
@@ -5271,6 +5272,26 @@ def settings_database_status_api():
                 "error": str(exc),
             }
         ), 500
+
+
+@app.route(
+    "/api/settings/database/check",
+    methods=["POST"],
+)
+def settings_database_check_api():
+    """
+    Run a read-only health check of the live TapeBox catalog.
+    """
+
+    result = check_catalog_health()
+
+    status_code = (
+        200
+        if result.get("success")
+        else 500
+    )
+
+    return jsonify(result), status_code
 
 
 @app.route(

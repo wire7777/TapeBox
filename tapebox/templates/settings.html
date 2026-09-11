@@ -233,6 +233,101 @@
 
     <div
         style="
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 18px;
+        "
+    >
+        <div
+            style="
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 12px;
+            "
+        >
+            <h3 style="margin: 0;">
+                Database Health
+            </h3>
+
+            <div
+                id="database-health-status"
+                style="font-weight: 700;"
+            >
+                Not checked
+            </div>
+        </div>
+
+        <div
+            style="
+                display: grid;
+                grid-template-columns:
+                    repeat(auto-fit, minmax(180px, 1fr));
+                gap: 8px 18px;
+                line-height: 1.6;
+                margin-bottom: 14px;
+            "
+        >
+            <div>
+                <strong>Integrity:</strong>
+                <span id="database-health-integrity">-</span>
+            </div>
+
+            <div>
+                <strong>Foreign Keys:</strong>
+                <span id="database-health-foreign-keys">-</span>
+            </div>
+
+            <div>
+                <strong>Journal Mode:</strong>
+                <span id="database-health-journal">-</span>
+            </div>
+
+            <div>
+                <strong>Database Size:</strong>
+                <span id="database-health-size">-</span>
+            </div>
+
+            <div>
+                <strong>Tapes:</strong>
+                <span id="database-health-tapes">-</span>
+            </div>
+
+            <div>
+                <strong>Files:</strong>
+                <span id="database-health-files">-</span>
+            </div>
+
+            <div>
+                <strong>Archive Jobs:</strong>
+                <span id="database-health-jobs">-</span>
+            </div>
+
+            <div>
+                <strong>Spanned Parts:</strong>
+                <span id="database-health-parts">-</span>
+            </div>
+
+            <div>
+                <strong>Restore Operations:</strong>
+                <span id="database-health-restores">-</span>
+            </div>
+        </div>
+
+        <button
+            type="button"
+            id="database-check-button"
+            class="action-button"
+        >
+            Check Database
+        </button>
+    </div>
+
+    <div
+        style="
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
@@ -447,6 +542,39 @@
     const databaseMessage =
         document.getElementById("database-message");
 
+    const databaseCheckButton =
+        document.getElementById("database-check-button");
+
+    const databaseHealthStatus =
+        document.getElementById("database-health-status");
+
+    const databaseHealthIntegrity =
+        document.getElementById("database-health-integrity");
+
+    const databaseHealthForeignKeys =
+        document.getElementById("database-health-foreign-keys");
+
+    const databaseHealthJournal =
+        document.getElementById("database-health-journal");
+
+    const databaseHealthSize =
+        document.getElementById("database-health-size");
+
+    const databaseHealthTapes =
+        document.getElementById("database-health-tapes");
+
+    const databaseHealthFiles =
+        document.getElementById("database-health-files");
+
+    const databaseHealthJobs =
+        document.getElementById("database-health-jobs");
+
+    const databaseHealthParts =
+        document.getElementById("database-health-parts");
+
+    const databaseHealthRestores =
+        document.getElementById("database-health-restores");
+
 
     function formatBytes(bytes) {
         const value = Number(bytes || 0);
@@ -511,6 +639,97 @@
                 "Status unavailable";
         }
     }
+
+
+    async function checkDatabaseHealth() {
+        databaseCheckButton.disabled = true;
+        databaseHealthStatus.textContent = "Checking...";
+
+        try {
+            const response = await fetch(
+                "/api/settings/database/check",
+                {
+                    method: "POST",
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.error ||
+                    "Database health check failed."
+                );
+            }
+
+            databaseHealthStatus.textContent =
+                data.healthy
+                ? "HEALTHY"
+                : "WARNING";
+
+            databaseHealthStatus.style.color =
+                data.healthy
+                ? "#35c759"
+                : "#ffcc00";
+
+            databaseHealthIntegrity.textContent =
+                data.integrity || "-";
+
+            databaseHealthForeignKeys.textContent =
+                data.foreign_keys || "-";
+
+            databaseHealthJournal.textContent =
+                String(
+                    data.journal_mode || "-"
+                ).toUpperCase();
+
+            databaseHealthSize.textContent =
+                formatBytes(
+                    data.size_bytes
+                );
+
+            const tables = data.tables || {};
+
+            databaseHealthTapes.textContent =
+                tables.tapes ?? "-";
+
+            databaseHealthFiles.textContent =
+                tables.files ?? "-";
+
+            databaseHealthJobs.textContent =
+                tables.archive_jobs ?? "-";
+
+            databaseHealthParts.textContent =
+                tables.file_parts ?? "-";
+
+            databaseHealthRestores.textContent =
+                tables.restore_operations ?? "-";
+
+            databaseMessage.textContent =
+                data.healthy
+                ? "Database health check passed."
+                : "Database health check found warnings.";
+
+        } catch (error) {
+            databaseHealthStatus.textContent =
+                "ERROR";
+
+            databaseHealthStatus.style.color =
+                "#ff5f57";
+
+            databaseMessage.textContent =
+                error.message;
+
+        } finally {
+            databaseCheckButton.disabled = false;
+        }
+    }
+
+
+    databaseCheckButton.addEventListener(
+        "click",
+        checkDatabaseHealth
+    );
 
 
     backupButton.addEventListener(
