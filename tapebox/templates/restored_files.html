@@ -85,6 +85,50 @@ Restored Files - TapeBox
 </div>
 
 
+<div
+    style="
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+    "
+>
+    <button
+        type="button"
+        id="restored-select-all-button"
+        class="action-button"
+    >
+        Select All
+    </button>
+
+    <button
+        type="button"
+        id="restored-clear-all-button"
+        class="action-button"
+        disabled
+    >
+        Clear All
+    </button>
+
+    <button
+        type="button"
+        id="restored-delete-selected-button"
+        class="action-button tapebox-danger-button"
+        disabled
+    >
+        Delete Selected
+    </button>
+
+    <span
+        id="restored-selection-summary"
+        class="subtext"
+    >
+        0 items selected
+    </span>
+</div>
+
+
 <div style="overflow-x: auto;">
 
     <table
@@ -95,6 +139,16 @@ Restored Files - TapeBox
     >
         <thead>
             <tr>
+                <th
+                    style="
+                        text-align: center;
+                        padding: 10px;
+                        width: 70px;
+                    "
+                >
+                    Select
+                </th>
+
                 <th
                     style="
                         text-align: left;
@@ -141,6 +195,19 @@ Restored Files - TapeBox
         {% for row in rows %}
 
             <tr>
+                <td
+                    style="
+                        padding: 10px;
+                        text-align: center;
+                    "
+                >
+                    <input
+                        type="checkbox"
+                        class="restored-select-checkbox"
+                        data-path="{{ row.path }}"
+                    >
+                </td>
+
                 <td style="padding: 10px;">
 
                 {% if row.type == "directory" %}
@@ -273,7 +340,7 @@ Restored Files - TapeBox
 
             <tr>
                 <td
-                    colspan="4"
+                    colspan="5"
                     style="
                         padding: 24px;
                         text-align: center;
@@ -290,5 +357,226 @@ Restored Files - TapeBox
     </table>
 
 </div>
+
+<script>
+(() => {
+    const selectAllButton =
+        document.getElementById(
+            "restored-select-all-button"
+        );
+
+    const clearAllButton =
+        document.getElementById(
+            "restored-clear-all-button"
+        );
+
+    const deleteSelectedButton =
+        document.getElementById(
+            "restored-delete-selected-button"
+        );
+
+    const selectionSummary =
+        document.getElementById(
+            "restored-selection-summary"
+        );
+
+
+    function checkboxes() {
+        return Array.from(
+            document.querySelectorAll(
+                ".restored-select-checkbox"
+            )
+        );
+    }
+
+
+    function selectedPaths() {
+        return checkboxes()
+            .filter(
+                checkbox => checkbox.checked
+            )
+            .map(
+                checkbox =>
+                    checkbox.dataset.path
+            );
+    }
+
+
+    function updateSelection() {
+        const count =
+            selectedPaths().length;
+
+        selectionSummary.textContent =
+            count
+            + (
+                count === 1
+                ? " item selected"
+                : " items selected"
+            );
+
+        clearAllButton.disabled =
+            count === 0;
+
+        deleteSelectedButton.disabled =
+            count === 0;
+    }
+
+
+    checkboxes().forEach(
+        checkbox => {
+            checkbox.addEventListener(
+                "change",
+                updateSelection
+            );
+        }
+    );
+
+
+    selectAllButton.addEventListener(
+        "click",
+        () => {
+            checkboxes().forEach(
+                checkbox => {
+                    checkbox.checked = true;
+                }
+            );
+
+            updateSelection();
+        }
+    );
+
+
+    clearAllButton.addEventListener(
+        "click",
+        () => {
+            checkboxes().forEach(
+                checkbox => {
+                    checkbox.checked = false;
+                }
+            );
+
+            updateSelection();
+        }
+    );
+
+
+    deleteSelectedButton.addEventListener(
+        "click",
+        async () => {
+            const paths =
+                selectedPaths();
+
+            if (!paths.length) {
+                return;
+            }
+
+            const count =
+                paths.length;
+
+            const confirmed =
+                await window.tapeboxConfirm({
+                    title:
+                        "Delete Restored Files?",
+
+                    message:
+                        "Permanently delete "
+                        + count
+                        + (
+                            count === 1
+                            ? " selected item?"
+                            : " selected items?"
+                        ),
+
+                    warning:
+                        "This will permanently "
+                        + "delete the selected "
+                        + "file(s) from disk. "
+                        + "This cannot be undone.",
+
+                    confirmText:
+                        "Delete",
+
+                    danger: true,
+                });
+
+            if (!confirmed) {
+                return;
+            }
+
+            const originalText =
+                deleteSelectedButton.textContent;
+
+            deleteSelectedButton.disabled =
+                true;
+
+            selectAllButton.disabled =
+                true;
+
+            clearAllButton.disabled =
+                true;
+
+            deleteSelectedButton.textContent =
+                "Deleting...";
+
+            try {
+                const response =
+                    await fetch(
+                        "/api/restored/delete-selected",
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type":
+                                    "application/json",
+                            },
+                            body: JSON.stringify({
+                                paths,
+                            }),
+                        }
+                    );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || "Could not delete "
+                        + "selected restored items."
+                    );
+                }
+
+                window.location.reload();
+
+            } catch (error) {
+                await window.tapeboxAlert({
+                    title:
+                        "Delete Failed",
+
+                    message:
+                        error.message
+                        || String(error),
+
+                    type:
+                        "error",
+                });
+
+                deleteSelectedButton.textContent =
+                    originalText;
+
+                selectAllButton.disabled =
+                    false;
+
+                updateSelection();
+            }
+        }
+    );
+
+
+    updateSelection();
+})();
+</script>
 
 {% endblock %}
