@@ -199,9 +199,6 @@ Job #{{ job["id"] }} · TapeBox
 
             <button
                 type="submit"
-                onclick="return confirm(
-                    'Start or continue restoring this archive?'
-                );"
             >
                 Restore / Continue
             </button>
@@ -1063,12 +1060,26 @@ Job #{{ job["id"] }} · TapeBox
         async (event) => {
             event.preventDefault();
 
-            if (
-                !window.confirm(
-                    "Start or continue restoring "
-                    + "this archive?"
-                )
-            ) {
+            const confirmed =
+                await window.tapeboxConfirm({
+                    title:
+                        "Restore Archive?",
+
+                    message:
+                        "Start or continue restoring "
+                        + "this archive?",
+
+                    warning:
+                        "Existing matching files will "
+                        + "be verified and skipped.",
+
+                    confirmText:
+                        "Restore",
+
+                    danger: false,
+                });
+
+            if (!confirmed) {
                 return;
             }
 

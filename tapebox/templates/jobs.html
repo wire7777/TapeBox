@@ -140,15 +140,28 @@ document.addEventListener(
         const jobId =
             button.dataset.jobId;
 
-        if (
-            !confirm(
-                "Cancel archive job #"
-                + jobId
-                + "?\n\n"
-                + "Files already safely written to tape "
-                + "will remain in the catalog."
-            )
-        ) {
+        const confirmed =
+            await window.tapeboxConfirm({
+                title:
+                    "Cancel Archive Job?",
+
+                message:
+                    "Cancel archive job #"
+                    + jobId
+                    + "?",
+
+                warning:
+                    "Files already safely written "
+                    + "to tape will remain "
+                    + "in the catalog.",
+
+                confirmText:
+                    "Cancel Job",
+
+                danger: true,
+            });
+
+        if (!confirmed) {
             return;
         }
 
