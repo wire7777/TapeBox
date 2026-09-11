@@ -1566,6 +1566,11 @@ window.monitorTapeBoxArchiveOperation =
             "staging-archive-selected-button"
         );
 
+    const deleteSelectedButton =
+        document.getElementById(
+            "staging-delete-selected-button"
+        );
+
     const summary =
         document.getElementById(
             "staging-selection-summary"
@@ -1590,6 +1595,7 @@ window.monitorTapeBoxArchiveOperation =
         !selectAllButton
         || !clearAllButton
         || !archiveSelectedButton
+        || !deleteSelectedButton
         || !summary
         || !planPanel
         || !planStatus
@@ -1826,6 +1832,9 @@ window.monitorTapeBoxArchiveOperation =
         archiveSelectedButton.disabled =
             count === 0;
 
+        deleteSelectedButton.disabled =
+            count === 0;
+
         selectAllButton.disabled =
             checkboxes().length === 0;
 
@@ -1885,6 +1894,98 @@ window.monitorTapeBoxArchiveOperation =
             }
 
             updateSelection();
+        }
+    );
+
+
+    deleteSelectedButton.addEventListener(
+        "click",
+        async () => {
+            const paths =
+                selectedPaths();
+
+            if (!paths.length) {
+                return;
+            }
+
+            const count = paths.length;
+
+            const confirmed = window.confirm(
+                "Permanently delete "
+                + count
+                + (
+                    count === 1
+                    ? " selected item"
+                    : " selected items"
+                )
+                + " from Staging?\n\n"
+                + "This cannot be undone."
+            );
+
+            if (!confirmed) {
+                return;
+            }
+
+            const originalText =
+                deleteSelectedButton.textContent;
+
+            deleteSelectedButton.disabled =
+                true;
+
+            archiveSelectedButton.disabled =
+                true;
+
+            selectAllButton.disabled =
+                true;
+
+            clearAllButton.disabled =
+                true;
+
+            deleteSelectedButton.textContent =
+                "Deleting...";
+
+            try {
+                const response = await fetch(
+                    "/api/staging/delete-selected",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+                        body: JSON.stringify({
+                            paths,
+                        }),
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || "Could not delete "
+                        + "selected staging items."
+                    );
+                }
+
+                window.location.reload();
+
+            } catch (error) {
+                alert(
+                    error.message
+                    || String(error)
+                );
+
+                deleteSelectedButton.textContent =
+                    originalText;
+
+                updateSelection();
+            }
         }
     );
 

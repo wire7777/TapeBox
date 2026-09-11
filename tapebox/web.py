@@ -2968,6 +2968,191 @@ def staging_plan_api():
 
 
 @app.route(
+    "/api/staging/delete-selected",
+    methods=["POST"],
+)
+def staging_delete_selected_api():
+    """
+    Permanently delete selected files and/or folders
+    from the configured staging area.
+    """
+
+    import shutil
+
+    initialize_default_settings()
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    relative_paths = payload.get(
+        "paths",
+        [],
+    )
+
+    if not isinstance(
+        relative_paths,
+        list,
+    ):
+        return jsonify({
+            "success": False,
+            "error": (
+                "Selected paths must be a list."
+            ),
+        }), 400
+
+    relative_paths = [
+        str(item).strip()
+        for item in relative_paths
+        if str(item).strip()
+    ]
+
+    if not relative_paths:
+        return jsonify({
+            "success": False,
+            "error": (
+                "Select at least one staging "
+                "file or folder to delete."
+            ),
+        }), 400
+
+    deleted = []
+
+    try:
+        root = _get_staging_root().resolve()
+
+        #
+        # Validate every requested path before
+        # deleting anything.
+        #
+        targets = []
+
+        for relative_path in relative_paths:
+            relative = Path(
+                relative_path
+            )
+
+            if relative.is_absolute():
+                raise ValueError(
+                    "Absolute paths are not allowed."
+                )
+
+            if ".." in relative.parts:
+                raise ValueError(
+                    "Parent path traversal is not allowed."
+                )
+
+            if not relative.parts:
+                raise ValueError(
+                    "The staging root cannot be deleted."
+                )
+
+            if relative.parts[0] == ".uploads":
+                raise ValueError(
+                    "TapeBox internal staging paths "
+                    "cannot be deleted."
+                )
+
+            candidate = root / relative
+
+            #
+            # Resolve the parent separately so a
+            # symlinked parent cannot escape staging.
+            #
+            resolved_parent = (
+                candidate.parent.resolve()
+            )
+
+            try:
+                resolved_parent.relative_to(root)
+            except ValueError:
+                raise ValueError(
+                    "Path is outside the staging area."
+                )
+
+            #
+            # A selected symlink should remove the
+            # link itself, never its target.
+            #
+            if candidate.is_symlink():
+                targets.append((
+                    relative_path,
+                    candidate,
+                    "symlink",
+                ))
+                continue
+
+            resolved = candidate.resolve()
+
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                raise ValueError(
+                    "Path is outside the staging area."
+                )
+
+            if resolved == root:
+                raise ValueError(
+                    "The staging root cannot be deleted."
+                )
+
+            if not resolved.exists():
+                raise ValueError(
+                    "Staging item no longer exists: "
+                    f"{relative_path}"
+                )
+
+            if resolved.is_dir():
+                item_type = "directory"
+
+            elif resolved.is_file():
+                item_type = "file"
+
+            else:
+                raise ValueError(
+                    "Unsupported staging item: "
+                    f"{relative_path}"
+                )
+
+            targets.append((
+                relative_path,
+                resolved,
+                item_type,
+            ))
+
+        #
+        # Everything is valid. Now perform deletion.
+        #
+        for (
+            relative_path,
+            target,
+            item_type,
+        ) in targets:
+            if item_type == "directory":
+                shutil.rmtree(target)
+
+            else:
+                target.unlink()
+
+            deleted.append(relative_path)
+
+    except (
+        OSError,
+        ValueError,
+    ) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+    return jsonify({
+        "success": True,
+        "deleted": deleted,
+        "count": len(deleted),
+    })
+
+
+@app.route(
     "/api/staging/archive-selected",
     methods=["POST"],
 )
