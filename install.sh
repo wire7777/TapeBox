@@ -123,15 +123,30 @@ mkdir -p \
     "$MOUNT_ROOT/ltfs-inspect" \
     "$MOUNT_ROOT/restored"
 
-chgrp -R tapebox \
+# TapeBox application data is private to the service user.
+for dir in \
     "$DATA_DIR" \
-    "$LOG_DIR" \
-    "$MOUNT_ROOT"
+    "$DATA_DIR/backups" \
+    "$DATA_DIR/manifests" \
+    "$DATA_DIR/state" \
+    "$LOG_DIR"
+do
+    chown "$RUN_USER":tapebox "$dir"
+    chmod 0750 "$dir"
+done
 
-chmod -R g+rwX \
-    "$DATA_DIR" \
-    "$LOG_DIR" \
-    "$MOUNT_ROOT"
+# Tape working directories may also be used by members of
+# the tapebox group, so keep these group-writable.
+for dir in \
+    "$MOUNT_ROOT" \
+    "$MOUNT_ROOT/staging" \
+    "$MOUNT_ROOT/ltfs" \
+    "$MOUNT_ROOT/ltfs-inspect" \
+    "$MOUNT_ROOT/restored"
+do
+    chown "$RUN_USER":tapebox "$dir"
+    chmod 0770 "$dir"
+done
 
 echo
 echo "[5/9] Installing udev rules..."
@@ -188,7 +203,7 @@ Group=tapebox
 WorkingDirectory=$APP_DIR
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=$APP_DIR/venv/bin/python -m tapebox.web --host 0.0.0.0 --port 8080
+ExecStart=$APP_DIR/venv/bin/gunicorn --workers 1 --threads 4 --timeout 300 --bind 0.0.0.0:8080 tapebox.web:app
 Restart=on-failure
 RestartSec=3
 
@@ -203,13 +218,32 @@ echo "[8/9] Initializing TapeBox..."
 
 cd "$APP_DIR"
 
-"$APP_DIR/venv/bin/python" - <<'PY'
-from tapebox.database import initialize_database
+# Repair ownership from older installs before SQLite is opened.
+for db_file in \
+    "$DATA_DIR/catalog.db" \
+    "$DATA_DIR/catalog.db-wal" \
+    "$DATA_DIR/catalog.db-shm"
+do
+    if [[ -e "$db_file" ]]; then
+        chown "$RUN_USER":tapebox "$db_file"
+        chmod 0640 "$db_file"
+    fi
+done
 
-initialize_database()
+sudo -u "$RUN_USER" -g tapebox \
+    "$APP_DIR/venv/bin/python" -c 'from tapebox.database import initialize_database; initialize_database(); print("TapeBox database initialized.")'
 
-print("TapeBox database initialized.")
-PY
+# Keep database files private after initialization as well.
+for db_file in \
+    "$DATA_DIR/catalog.db" \
+    "$DATA_DIR/catalog.db-wal" \
+    "$DATA_DIR/catalog.db-shm"
+do
+    if [[ -e "$db_file" ]]; then
+        chown "$RUN_USER":tapebox "$db_file"
+        chmod 0640 "$db_file"
+    fi
+done
 
 echo
 echo "[9/9] Enabling service..."
