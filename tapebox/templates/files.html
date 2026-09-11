@@ -74,12 +74,78 @@ Files · TapeBox
 
     {% if rows %}
 
+    <div
+        style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        "
+    >
+        <button
+            id="files-select-all-button"
+            class="action-button"
+            type="button"
+        >
+            Select All
+        </button>
+
+        <button
+            id="files-clear-all-button"
+            class="action-button"
+            type="button"
+            disabled
+        >
+            Clear All
+        </button>
+
+        <button
+            id="files-restore-selected-button"
+            class="action-button"
+            type="button"
+            disabled
+        >
+            Restore Selected
+        </button>
+
+        <div
+            id="files-selection-summary"
+            style="
+                font-size: 0.92em;
+                white-space: nowrap;
+                opacity: 0.85;
+            "
+        >
+            0 files selected · 0 B
+        </div>
+    </div>
+
+    <div
+        id="files-restore-plan"
+        style="
+            display: none;
+            margin-bottom: 18px;
+            padding: 16px;
+            background: #151c26;
+            border: 1px solid #26303d;
+        "
+    ></div>
+
     <div class="table-wrap">
 
         <table>
 
             <thead>
             <tr>
+                <th
+                    style="
+                        text-align: center;
+                        width: 70px;
+                    "
+                >
+                    Select
+                </th>
                 <th>File</th>
                 <th>Path</th>
                 <th>Size</th>
@@ -95,6 +161,19 @@ Files · TapeBox
             {% set file = item.file %}
 
             <tr>
+
+                <td
+                    style="
+                        text-align: center;
+                    "
+                >
+                    <input
+                        type="checkbox"
+                        class="files-select-checkbox"
+                        data-file-id="{{ file["id"] }}"
+                        data-size="{{ file["size_bytes"] }}"
+                    >
+                </td>
 
                 <td>
                     <div class="strong">
@@ -179,5 +258,10 @@ Files · TapeBox
     {% endif %}
 
 </section>
+
+<script
+    src="{{ url_for('static', filename='files.js') }}"
+    defer
+></script>
 
 {% endblock %}

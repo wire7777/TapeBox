@@ -31,6 +31,7 @@ from tapebox.database import (
     register_existing_ltfs_tape,
     get_files_by_tape,
     search_files,
+    get_file_by_id,
     get_file_parts,
     get_setting,
     get_settings,
@@ -1201,6 +1202,223 @@ def tape_detail_page(tape_id):
         tape=tape,
         normal_files=normal_files,
         spanned_parts=spanned_parts,
+    )
+
+
+@app.route(
+    "/api/files/restore-plan",
+    methods=["POST"],
+)
+def files_restore_plan_api():
+    """
+    Build a read-only restore plan for selected catalog files.
+
+    This endpoint does not access the tape drive.
+    """
+
+    initialize_database()
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    raw_file_ids = payload.get(
+        "file_ids",
+        [],
+    )
+
+    if not isinstance(raw_file_ids, list):
+        return jsonify(
+            {
+                "success": False,
+                "error": "file_ids must be a list.",
+            }
+        ), 400
+
+    file_ids = []
+
+    for value in raw_file_ids:
+        try:
+            file_id = int(value)
+        except (TypeError, ValueError):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"Invalid file ID: {value}"
+                    ),
+                }
+            ), 400
+
+        if file_id <= 0:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"Invalid file ID: {value}"
+                    ),
+                }
+            ), 400
+
+        if file_id not in file_ids:
+            file_ids.append(file_id)
+
+    if not file_ids:
+        return jsonify(
+            {
+                "success": False,
+                "error": "No files were selected.",
+            }
+        ), 400
+
+    planned_files = []
+    required_tapes = []
+    seen_tape_ids = set()
+    total_bytes = 0
+
+    for file_id in file_ids:
+        row = get_file_by_id(
+            file_id
+        )
+
+        if row is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"File ID {file_id} "
+                        "does not exist."
+                    ),
+                }
+            ), 404
+
+        total_bytes += int(
+            row["size_bytes"] or 0
+        )
+
+        file_tapes = []
+
+        if row["is_spanned"]:
+            parts = get_file_parts(
+                file_id
+            )
+
+            if not parts:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Spanned file ID {file_id} "
+                            "has no cataloged parts."
+                        ),
+                    }
+                ), 409
+
+            for part in parts:
+                tape_id = part["tape_id"]
+
+                if tape_id is None:
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": (
+                                f"File ID {file_id} has "
+                                "a part with no tape."
+                            ),
+                        }
+                    ), 409
+
+                tape_info = {
+                    "tape_id": tape_id,
+                    "label": (
+                        part["tape_label"]
+                        or part["ltfs_uuid"]
+                        or f"Tape #{tape_id}"
+                    ),
+                    "ltfs_uuid": (
+                        part["ltfs_uuid"]
+                    ),
+                }
+
+                if tape_id not in [
+                    item["tape_id"]
+                    for item in file_tapes
+                ]:
+                    file_tapes.append(
+                        tape_info
+                    )
+
+                if tape_id not in seen_tape_ids:
+                    seen_tape_ids.add(
+                        tape_id
+                    )
+                    required_tapes.append(
+                        tape_info
+                    )
+
+        else:
+            tape_id = row["tape_id"]
+
+            if tape_id is None:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            f"File ID {file_id} "
+                            "has no cataloged tape."
+                        ),
+                    }
+                ), 409
+
+            tape_info = {
+                "tape_id": tape_id,
+                "label": (
+                    row["tape_label"]
+                    or row["ltfs_uuid"]
+                    or f"Tape #{tape_id}"
+                ),
+                "ltfs_uuid": (
+                    row["ltfs_uuid"]
+                ),
+            }
+
+            file_tapes.append(
+                tape_info
+            )
+
+            if tape_id not in seen_tape_ids:
+                seen_tape_ids.add(
+                    tape_id
+                )
+                required_tapes.append(
+                    tape_info
+                )
+
+        planned_files.append(
+            {
+                "file_id": row["id"],
+                "filename": row["filename"],
+                "relative_path": row["relative_path"],
+                "size_bytes": int(
+                    row["size_bytes"] or 0
+                ),
+                "is_spanned": bool(
+                    row["is_spanned"]
+                ),
+                "required_tapes": file_tapes,
+            }
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "file_count": len(
+                planned_files
+            ),
+            "total_bytes": total_bytes,
+            "files": planned_files,
+            "required_tapes": required_tapes,
+        }
     )
 
 
