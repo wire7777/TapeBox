@@ -11,8 +11,26 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 UDEV_FILE="/etc/udev/rules.d/99-tapebox.rules"
 SUDOERS_FILE="/etc/sudoers.d/tapebox-rescan"
 
+LTFS_REPO="https://github.com/LinearTapeFileSystem/ltfs.git"
+LTFS_BRANCH="release/v2.4.8.4"
+LTFS_EXPECTED_VERSION="2.4.8.4"
+LTFS_BUILD_ROOT="/tmp/tapebox-ltfs-build"
+
 if [[ $EUID -ne 0 ]]; then
     echo "Run this installer with sudo:"
+    echo "  sudo ./install.sh"
+    exit 1
+fi
+
+INSTALL_USER="${SUDO_USER:-}"
+RUN_USER="${INSTALL_USER:-root}"
+
+if [[ "$RUN_USER" == "root" ]]; then
+    echo
+    echo "ERROR:"
+    echo "Could not determine the non-root install user."
+    echo
+    echo "Run the installer from your normal user account:"
     echo "  sudo ./install.sh"
     exit 1
 fi
@@ -22,8 +40,74 @@ echo "========================================"
 echo " TapeBox Installer"
 echo "========================================"
 echo
+echo "Application user: $RUN_USER"
+echo
 
-echo "[1/9] Checking required commands..."
+echo "[1/10] Installing TapeBox system dependencies..."
+
+BASE_PACKAGES=(
+    python3
+    python3-venv
+    python3-pip
+    sqlite3
+    git
+    sudo
+    curl
+    ca-certificates
+    attr
+    fuse3
+    lsscsi
+    mt-st
+    sg3-utils
+)
+
+LTFS_BUILD_PACKAGES=(
+    build-essential
+    autoconf
+    automake
+    libtool
+    pkg-config
+    libfuse-dev
+    libxml2-dev
+    libsnmp-dev
+    uuid-dev
+    libicu-dev
+    icu-devtools
+)
+
+ALL_PACKAGES=(
+    "${BASE_PACKAGES[@]}"
+    "${LTFS_BUILD_PACKAGES[@]}"
+)
+
+MISSING_PACKAGES=()
+
+for pkg in "${ALL_PACKAGES[@]}"; do
+    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
+        | grep -q '^install ok installed$'; then
+        printf "  %-22s OK\n" "$pkg"
+    else
+        printf "  %-22s MISSING\n" "$pkg"
+        MISSING_PACKAGES+=("$pkg")
+    fi
+done
+
+if (( ${#MISSING_PACKAGES[@]} > 0 )); then
+    echo
+    echo "Installing missing packages:"
+    printf '  %s\n' "${MISSING_PACKAGES[@]}"
+    echo
+
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y "${MISSING_PACKAGES[@]}"
+else
+    echo
+    echo "All required system packages are already installed."
+fi
+
+echo
+echo "Verifying required commands..."
 
 required_commands=(
     python3
@@ -33,59 +117,122 @@ required_commands=(
     fusermount3
     rescan-scsi-bus.sh
     visudo
+    sqlite3
+    curl
+    pkg-config
 )
-
-missing=0
 
 for cmd in "${required_commands[@]}"; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo "  MISSING: $cmd"
-        missing=1
-    else
-        echo "  OK: $cmd -> $(command -v "$cmd")"
+        echo "ERROR: Required command '$cmd' is missing."
+        exit 1
     fi
+
+    echo "  OK: $cmd -> $(command -v "$cmd")"
 done
 
-if [[ $missing -ne 0 ]]; then
+echo
+echo "[2/10] Checking LTFS..."
+
+ltfs_version_ok() {
+    command -v ltfs >/dev/null 2>&1 &&
+    command -v mkltfs >/dev/null 2>&1 &&
+    command -v ltfsck >/dev/null 2>&1 &&
+    ltfs --version 2>&1 \
+        | grep -Fq "LTFS version ${LTFS_EXPECTED_VERSION}"
+}
+
+if ltfs_version_ok; then
+    echo "  LTFS $LTFS_EXPECTED_VERSION is already installed."
+else
     echo
-    echo "Install the missing Linux packages first."
+    echo "LTFS $LTFS_EXPECTED_VERSION is not installed."
+    echo "TapeBox will build and install it automatically."
     echo
-    echo "On Ubuntu / Linux Mint, typically:"
+
+    rm -rf "$LTFS_BUILD_ROOT"
+    mkdir -p "$LTFS_BUILD_ROOT"
+    cd "$LTFS_BUILD_ROOT"
+
+    echo "  Cloning LTFS $LTFS_BRANCH..."
+
+    git clone \
+        --branch "$LTFS_BRANCH" \
+        --single-branch \
+        "$LTFS_REPO" \
+        ltfs
+
+    cd ltfs
+
+    echo "  Initializing LTFS submodules..."
+
+    git submodule update --init --recursive
+
+    echo "  Preparing ICU pkg-config compatibility file..."
+
+    ICU_PC_DIR="$(
+        pkg-config --variable=pcfiledir icu-uc 2>/dev/null || true
+    )"
+
+    if [[ -z "$ICU_PC_DIR" ]]; then
+        echo "ERROR: pkg-config could not locate icu-uc."
+        exit 1
+    fi
+
+    if [[ ! -f "$ICU_PC_DIR/icu-uc.pc" ]]; then
+        echo "ERROR: ICU pkg-config file was not found:"
+        echo "  $ICU_PC_DIR/icu-uc.pc"
+        exit 1
+    fi
+
+    cp "$ICU_PC_DIR/icu-uc.pc" ./icu.pc
+
+    echo "  Running autogen..."
+
+    ./autogen.sh
+
+    echo "  Configuring LTFS..."
+
+    PKG_CONFIG_PATH="$PWD:${PKG_CONFIG_PATH:-}" \
+        ./configure
+
+    echo "  Compiling LTFS..."
+
+    make -j"$(nproc)"
+
+    echo "  Installing LTFS..."
+
+    make install
+
+    echo "  Refreshing shared library cache..."
+
+    ldconfig
+    hash -r
+
     echo
-    echo "  sudo apt update"
-    echo "  sudo apt install -y python3 python3-venv python3-pip git lsscsi mt-st fuse3 attr sg3-utils sudo"
-    echo
-    exit 1
+    echo "Verifying LTFS installation..."
+
+    if ! ltfs_version_ok; then
+        echo "ERROR: LTFS installation verification failed."
+        exit 1
+    fi
+
+    echo "  LTFS installed successfully."
+
+    cd "$APP_DIR"
+    rm -rf "$LTFS_BUILD_ROOT"
 fi
 
 echo
-echo "[2/9] Checking LTFS..."
-
-if ! command -v ltfs >/dev/null 2>&1; then
-    echo
-    echo "ERROR: ltfs was not found in PATH."
-    echo
-    echo "TapeBox requires a working LTFS installation."
-    echo "Install LTFS first, then run this installer again."
-    exit 1
-fi
-
-if ! command -v mkltfs >/dev/null 2>&1; then
-    echo
-    echo "ERROR: mkltfs was not found in PATH."
-    echo
-    echo "TapeBox requires mkltfs to prepare new cartridges."
-    echo "Install LTFS first, then run this installer again."
-    exit 1
-fi
-
 echo "  ltfs:   $(command -v ltfs)"
 echo "  mkltfs: $(command -v mkltfs)"
+echo "  ltfsck: $(command -v ltfsck)"
+echo
 
 ltfs --version 2>&1 | head -3 || true
 
 echo
-echo "[3/9] Creating TapeBox group..."
+echo "[3/10] Creating TapeBox group..."
 
 if ! getent group tapebox >/dev/null 2>&1; then
     groupadd --system tapebox
@@ -94,24 +241,12 @@ else
     echo "  Group already exists: tapebox"
 fi
 
-INSTALL_USER="${SUDO_USER:-}"
-RUN_USER="${INSTALL_USER:-root}"
-
-if [[ "$RUN_USER" == "root" ]]; then
-    echo
-    echo "WARNING:"
-    echo "Could not determine the non-root install user."
-    echo "The service would otherwise run as root."
-    echo
-    echo "Re-run this installer using sudo from your normal user account."
-    exit 1
-fi
-
 usermod -aG tapebox "$RUN_USER"
+
 echo "  Added $RUN_USER to tapebox group"
 
 echo
-echo "[4/9] Creating directories..."
+echo "[4/10] Creating TapeBox directories..."
 
 mkdir -p \
     "$DATA_DIR/backups" \
@@ -123,7 +258,6 @@ mkdir -p \
     "$MOUNT_ROOT/ltfs-inspect" \
     "$MOUNT_ROOT/restored"
 
-# TapeBox application data is private to the service user.
 for dir in \
     "$DATA_DIR" \
     "$DATA_DIR/backups" \
@@ -135,8 +269,6 @@ do
     chmod 0750 "$dir"
 done
 
-# Tape working directories may also be used by members of
-# the tapebox group, so keep these group-writable.
 for dir in \
     "$MOUNT_ROOT" \
     "$MOUNT_ROOT/staging" \
@@ -149,7 +281,7 @@ do
 done
 
 echo
-echo "[5/9] Installing udev rules..."
+echo "[5/10] Installing hardware access rules..."
 
 cat > "$UDEV_FILE" <<'RULES'
 SUBSYSTEM=="scsi_generic", ATTRS{type}=="8", SYMLINK+="tapebox-changer", GROUP="tapebox", MODE="0660"
@@ -164,7 +296,7 @@ udevadm trigger
 echo "  Installed: $UDEV_FILE"
 
 echo
-echo "  Installing restricted SCSI rescan sudo rule..."
+echo "Installing restricted SCSI rescan sudo rule..."
 
 cat > "$SUDOERS_FILE" <<EOF_SUDOERS
 $RUN_USER ALL=(root) NOPASSWD: /usr/bin/rescan-scsi-bus.sh
@@ -181,15 +313,29 @@ fi
 echo "  Installed: $SUDOERS_FILE"
 
 echo
-echo "[6/9] Creating Python virtual environment..."
+echo "[6/10] Creating Python virtual environment..."
+
+rm -rf "$APP_DIR/venv"
 
 python3 -m venv "$APP_DIR/venv"
 
-"$APP_DIR/venv/bin/pip" install --upgrade pip
-"$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+"$APP_DIR/venv/bin/python" -m pip install --upgrade pip
+"$APP_DIR/venv/bin/python" -m pip install \
+    -r "$APP_DIR/requirements.txt"
 
 echo
-echo "[7/9] Creating systemd service..."
+echo "Verifying Python packages..."
+
+"$APP_DIR/venv/bin/python" - <<'PY'
+from importlib.metadata import version
+import gunicorn
+
+print("  Flask:", version("flask"))
+print("  Gunicorn:", gunicorn.__version__)
+PY
+
+echo
+echo "[7/10] Creating systemd service..."
 
 cat > "$SERVICE_FILE" <<EOF_SERVICE
 [Unit]
@@ -213,12 +359,13 @@ EOF_SERVICE
 
 systemctl daemon-reload
 
+echo "  Installed: $SERVICE_FILE"
+
 echo
-echo "[8/9] Initializing TapeBox..."
+echo "[8/10] Initializing TapeBox database..."
 
 cd "$APP_DIR"
 
-# Repair ownership from older installs before SQLite is opened.
 for db_file in \
     "$DATA_DIR/catalog.db" \
     "$DATA_DIR/catalog.db-wal" \
@@ -231,9 +378,9 @@ do
 done
 
 sudo -u "$RUN_USER" -g tapebox \
-    "$APP_DIR/venv/bin/python" -c 'from tapebox.database import initialize_database; initialize_database(); print("TapeBox database initialized.")'
+    "$APP_DIR/venv/bin/python" \
+    -c 'from tapebox.database import initialize_database; initialize_database(); print("TapeBox database initialized.")'
 
-# Keep database files private after initialization as well.
 for db_file in \
     "$DATA_DIR/catalog.db" \
     "$DATA_DIR/catalog.db-wal" \
@@ -246,28 +393,92 @@ do
 done
 
 echo
-echo "[9/9] Enabling service..."
+echo "[9/10] Enabling and starting TapeBox..."
 
 systemctl enable tapebox
+systemctl restart tapebox
+
+echo
+echo "Waiting for TapeBox to start..."
+
+TAPEBOX_READY=0
+
+for attempt in {1..20}; do
+    if curl \
+        --silent \
+        --fail \
+        --max-time 3 \
+        http://127.0.0.1:8080/ \
+        >/dev/null 2>&1
+    then
+        TAPEBOX_READY=1
+        break
+    fi
+
+    sleep 1
+done
+
+if [[ "$TAPEBOX_READY" -ne 1 ]]; then
+    echo
+    echo "ERROR: TapeBox did not answer on port 8080."
+    echo
+    systemctl --no-pager --full status tapebox || true
+    echo
+    journalctl -u tapebox -n 80 --no-pager || true
+    exit 1
+fi
+
+echo "  TapeBox web server is responding."
+
+echo
+echo "[10/10] Final verification..."
+
+echo
+echo "LTFS:"
+ltfs --version 2>&1 | head -2 || true
+
+echo
+echo "TapeBox service:"
+systemctl is-enabled tapebox
+systemctl is-active tapebox
+
+echo
+echo "HTTP:"
+HTTP_STATUS="$(
+    curl \
+        --silent \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        http://127.0.0.1:8080/
+)"
+
+echo "  http://127.0.0.1:8080/ -> $HTTP_STATUS"
+
+if [[ "$HTTP_STATUS" != "200" ]]; then
+    echo "ERROR: TapeBox returned HTTP $HTTP_STATUS."
+    exit 1
+fi
+
+echo
+echo "Database:"
+ls -l "$DATA_DIR/catalog.db"
 
 echo
 echo "========================================"
-echo " Installation complete"
+echo " TapeBox installation successful"
 echo "========================================"
-echo
-echo "Start TapeBox:"
-echo
-echo "  sudo systemctl start tapebox"
-echo
-echo "Check status:"
-echo
-echo "  sudo systemctl status tapebox"
 echo
 echo "Web interface:"
 echo
 echo "  http://SERVER-IP:8080"
 echo
+echo "Service commands:"
+echo
+echo "  sudo systemctl status tapebox"
+echo "  sudo systemctl restart tapebox"
+echo "  sudo journalctl -u tapebox -f"
+echo
 echo "IMPORTANT:"
-echo "Log out and back in before using TapeBox manually so the"
-echo "new tapebox group membership is applied."
+echo "Log out and back in before manually accessing tape"
+echo "devices so your new tapebox group membership applies."
 echo
