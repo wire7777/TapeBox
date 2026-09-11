@@ -75,36 +75,12 @@ Actual read/write compatibility is determined by your tape drive and media. Tape
 
 TapeBox currently targets modern Ubuntu/Linux Mint-style systems.
 
-Linux packages commonly required:
+The installer automatically checks for and installs the Linux packages TapeBox needs, including Python, SQLite, SCSI/tape utilities, FUSE support, and the build dependencies required for LTFS.
 
-```bash
-sudo apt update
+TapeBox requires **LTFS 2.4.8.4**. If the required LTFS commands and version are not already available, the installer automatically builds and installs the official LTFS `release/v2.4.8.4` source from:
 
-sudo apt install -y \
-    python3 \
-    python3-venv \
-    python3-pip \
-    git \
-    lsscsi \
-    mt-st \
-    fuse3 \
-    attr
-```
-
-TapeBox also requires a working **LTFS** installation.
-
-These commands must be available in `PATH`:
-
-```bash
-command -v ltfs
-command -v mkltfs
-```
-
-Verify them with:
-
-```bash
-ltfs --version
-mkltfs --version
+```text
+https://github.com/LinearTapeFileSystem/ltfs.git
 ```
 
 TapeBox has been tested with:
@@ -114,11 +90,16 @@ LTFS version 2.4.8.4 (Prelim)
 LTFS Format Specification version 2.4.0
 ```
 
-LTFS packaging and installation varies between distributions and implementations, so TapeBox does **not** currently install LTFS automatically.
+After installation, verify LTFS with:
 
-Install and verify LTFS before running the TapeBox installer.
+```bash
+command -v ltfs
+command -v mkltfs
+command -v ltfsck
+ltfs --version
+```
 
-The binaries may live in locations such as `/usr/bin` or `/usr/local/bin`; they simply need to be available in the service `PATH`.
+Internet access is required during installation when Linux packages or LTFS source code need to be downloaded.
 
 ## Hardware Detection
 
@@ -163,27 +144,31 @@ sudo ./install.sh
 
 The installer:
 
-- checks required Linux commands
-- verifies `ltfs` and `mkltfs`
+- detects and installs missing Linux dependencies
+- verifies LTFS 2.4.8.4
+- automatically builds and installs LTFS 2.4.8.4 when needed
 - creates the `tapebox` group
 - adds the installing user to that group
 - creates TapeBox data and mount directories
 - installs tape-device udev rules
+- installs a restricted SCSI rescan sudo rule
 - creates a Python virtual environment
 - installs Python requirements
 - initializes the SQLite database
-- installs a systemd service
+- installs the TapeBox systemd service
 - enables TapeBox at boot
+- starts TapeBox
+- verifies the service and web interface are responding
+
+A successful installation ends with:
+
+```text
+TapeBox installation successful
+```
 
 After installation, **log out and back in** so your new `tapebox` group membership is applied.
 
-Then start TapeBox:
-
-```bash
-sudo systemctl start tapebox
-```
-
-Check it:
+Check the service with:
 
 ```bash
 sudo systemctl status tapebox
@@ -202,6 +187,32 @@ hostname -I
 ```
 
 TapeBox currently serves plain HTTP by default.
+
+## Security
+
+TapeBox 0.1.0 is intended for use on a **trusted private LAN**.
+
+The built-in service listens on:
+
+```text
+0.0.0.0:8080
+```
+
+TapeBox 0.1.0 does not provide built-in user authentication or HTTPS termination. Do **not** expose port 8080 directly to the public Internet.
+
+If remote access is required, place TapeBox behind an appropriately secured reverse proxy, VPN, or other trusted access layer.
+
+## Service Architecture
+
+TapeBox intentionally runs Gunicorn with **one worker** and multiple threads.
+
+The supplied systemd service uses:
+
+```text
+--workers 1 --threads 4
+```
+
+Do not increase the Gunicorn worker count without first redesigning TapeBox's operation locking and hardware state management. Tape operations coordinate access to a single physical tape drive using process-local state, so multiple independent worker processes could attempt conflicting hardware operations.
 
 ## Service Management
 
@@ -628,7 +639,7 @@ Current limitations/cautions include:
 
 - primarily tested on Linux Mint/Ubuntu
 - primarily tested with a directly attached SAS tape drive
-- LTFS must currently be installed separately
+- LTFS 2.4.8.4 is installed automatically when it is not already available
 - robotic tape-library/changer operation is not the primary tested workflow
 - the built-in web service currently uses HTTP by default
 - built-in authentication/HTTPS deployment is not yet the default configuration
