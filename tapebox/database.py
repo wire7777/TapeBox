@@ -89,6 +89,8 @@ def initialize_database():
                 tape_id INTEGER,
                 tape_path TEXT,
                 is_spanned INTEGER NOT NULL DEFAULT 0,
+                original_created_at TEXT,
+                original_modified_at TEXT,
                 archived_at TEXT,
                 verified_at TEXT,
 
@@ -194,6 +196,35 @@ def initialize_database():
                 """
                 ALTER TABLE tapes
                 ADD COLUMN location TEXT
+                """
+            )
+
+
+        #
+        # Preserve original source filesystem timestamps.
+        # Existing catalog rows remain NULL because their
+        # original timestamps cannot be reconstructed safely.
+        #
+        file_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(files)"
+            ).fetchall()
+        }
+
+        if "original_created_at" not in file_columns:
+            db.execute(
+                """
+                ALTER TABLE files
+                ADD COLUMN original_created_at TEXT
+                """
+            )
+
+        if "original_modified_at" not in file_columns:
+            db.execute(
+                """
+                ALTER TABLE files
+                ADD COLUMN original_modified_at TEXT
                 """
             )
 
@@ -985,6 +1016,8 @@ def record_archived_file(
     tape_id,
     tape_path,
     archive_job_id=None,
+    original_created_at=None,
+    original_modified_at=None,
 ):
     """
     Record a successfully archived single file.
@@ -1003,9 +1036,11 @@ def record_archived_file(
                 tape_id,
                 tape_path,
                 is_spanned,
+                original_created_at,
+                original_modified_at,
                 archived_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 archive_job_id,
@@ -1016,6 +1051,8 @@ def record_archived_file(
                 sha256,
                 tape_id,
                 tape_path,
+                original_created_at,
+                original_modified_at,
                 utc_now(),
             ),
         )
@@ -1049,6 +1086,8 @@ def get_files_by_tape(tape_id):
                 tape_id,
                 tape_path,
                 is_spanned,
+                original_created_at,
+                original_modified_at,
                 archived_at,
                 verified_at
             FROM files
@@ -1081,6 +1120,8 @@ def list_files():
                 files.checksum_sha256,
                 files.tape_path,
                 files.is_spanned,
+                files.original_created_at,
+                files.original_modified_at,
                 files.archived_at,
                 tapes.id AS tape_id,
                 tapes.label AS tape_label,
@@ -1112,6 +1153,8 @@ def get_file_by_id(file_id):
                 files.tape_id,
                 files.tape_path,
                 files.is_spanned,
+                files.original_created_at,
+                files.original_modified_at,
                 files.archived_at,
                 files.verified_at,
                 tapes.label AS tape_label,
@@ -1567,12 +1610,15 @@ def import_tape_manifest_records(
                     tape_id,
                     tape_path,
                     is_spanned,
+                    original_created_at,
+                    original_modified_at,
                     archived_at,
                     verified_at
                 )
                 VALUES (
                     NULL,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1584,6 +1630,12 @@ def import_tape_manifest_records(
                     tape_id,
                     tape_path,
                     is_spanned,
+                    entry.get(
+                        "original_created_at"
+                    ),
+                    entry.get(
+                        "original_modified_at"
+                    ),
                     archived_at,
                     verified_at,
                 ),
@@ -1681,13 +1733,16 @@ def import_tape_manifest_records(
                         tape_id,
                         tape_path,
                         is_spanned,
+                        original_created_at,
+                        original_modified_at,
                         archived_at,
                         verified_at
                     )
                     VALUES (
                         NULL,
                         ?, ?, ?, ?, ?,
-                        NULL, NULL, 1, ?, NULL
+                        NULL, NULL, 1,
+                        ?, ?, ?, NULL
                     )
                     """,
                     (
@@ -1696,6 +1751,12 @@ def import_tape_manifest_records(
                         filename,
                         whole_size,
                         whole_sha256,
+                        entry.get(
+                            "original_created_at"
+                        ),
+                        entry.get(
+                            "original_modified_at"
+                        ),
                         archived_at,
                     ),
                 )
@@ -1716,6 +1777,32 @@ def import_tape_manifest_records(
                         f"{relative_path}. "
                         "No recovery records were imported."
                     )
+
+
+                db.execute(
+                    """
+                    UPDATE files
+                    SET
+                        original_created_at = COALESCE(
+                            original_created_at,
+                            ?
+                        ),
+                        original_modified_at = COALESCE(
+                            original_modified_at,
+                            ?
+                        )
+                    WHERE id = ?
+                    """,
+                    (
+                        entry.get(
+                            "original_created_at"
+                        ),
+                        entry.get(
+                            "original_modified_at"
+                        ),
+                        parent_id,
+                    ),
+                )
 
             existing_part = db.execute(
                 """
@@ -2076,6 +2163,8 @@ def search_files(query):
                 files.checksum_sha256,
                 files.tape_path,
                 files.is_spanned,
+                files.original_created_at,
+                files.original_modified_at,
                 files.archived_at,
                 files.verified_at,
                 tapes.id AS tape_id,
@@ -2482,6 +2571,8 @@ def get_file_parts_by_tape(tape_id):
                 files.filename,
                 files.size_bytes AS file_size_bytes,
                 files.checksum_sha256 AS file_checksum_sha256,
+                files.original_created_at,
+                files.original_modified_at,
                 files.archived_at,
                 files.verified_at,
 
@@ -2564,6 +2655,8 @@ def record_spanned_file_part(
     tape_path,
     part_size_bytes,
     part_sha256,
+    original_created_at=None,
+    original_modified_at=None,
 ):
     """
     Atomically create/find a spanned parent file and record one
@@ -2609,9 +2702,15 @@ def record_spanned_file_part(
                     tape_id,
                     tape_path,
                     is_spanned,
+                    original_created_at,
+                    original_modified_at,
                     archived_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?,
+                    NULL, NULL, 1,
+                    ?, ?, ?
+                )
                 """,
                 (
                     archive_job_id,
@@ -2620,6 +2719,8 @@ def record_spanned_file_part(
                     filename,
                     file_size_bytes,
                     file_sha256,
+                    original_created_at,
+                    original_modified_at,
                     utc_now(),
                 ),
             )
@@ -2646,6 +2747,28 @@ def record_spanned_file_part(
                     "Spanned source file checksum changed since the "
                     "archive job began."
                 )
+
+
+            db.execute(
+                """
+                UPDATE files
+                SET
+                    original_created_at = COALESCE(
+                        original_created_at,
+                        ?
+                    ),
+                    original_modified_at = COALESCE(
+                        original_modified_at,
+                        ?
+                    )
+                WHERE id = ?
+                """,
+                (
+                    original_created_at,
+                    original_modified_at,
+                    file_id,
+                ),
+            )
 
         db.execute(
             """

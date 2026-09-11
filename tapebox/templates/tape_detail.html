@@ -217,6 +217,9 @@
                 <th>File</th>
                 <th>Path</th>
                 <th>Size</th>
+                <th>Original Created</th>
+                <th>Original Modified</th>
+                <th>Archived</th>
             </tr>
             </thead>
 
@@ -235,6 +238,18 @@
 
                 <td>
                     {{ file["size_bytes"] | format_bytes }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ file["original_created_display"] }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ file["original_modified_display"] }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ file["archived_display"] }}
                 </td>
             </tr>
 
@@ -277,6 +292,9 @@
                 <th>Part</th>
                 <th>Part Size</th>
                 <th>Tape Path</th>
+                <th>Original Created</th>
+                <th>Original Modified</th>
+                <th>Archived</th>
             </tr>
             </thead>
 
@@ -305,6 +323,18 @@
 
                 <td class="path">
                     {{ part["tape_path"] }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ part["original_created_display"] }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ part["original_modified_display"] }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ part["archived_display"] }}
                 </td>
             </tr>
 

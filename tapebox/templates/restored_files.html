@@ -180,6 +180,26 @@ Restored Files - TapeBox
 
                 <th
                     style="
+                        text-align: left;
+                        padding: 10px;
+                        width: 190px;
+                    "
+                >
+                    Created
+                </th>
+
+                <th
+                    style="
+                        text-align: left;
+                        padding: 10px;
+                        width: 190px;
+                    "
+                >
+                    Modified
+                </th>
+
+                <th
+                    style="
                         text-align: right;
                         padding: 10px;
                         width: 150px;
@@ -275,6 +295,24 @@ Restored Files - TapeBox
                 <td
                     style="
                         padding: 10px;
+                        white-space: nowrap;
+                    "
+                >
+                    {{ row.created }}
+                </td>
+
+                <td
+                    style="
+                        padding: 10px;
+                        white-space: nowrap;
+                    "
+                >
+                    {{ row.modified }}
+                </td>
+
+                <td
+                    style="
+                        padding: 10px;
                         text-align: right;
                     "
                 >
@@ -340,7 +378,7 @@ Restored Files - TapeBox
 
             <tr>
                 <td
-                    colspan="5"
+                    colspan="7"
                     style="
                         padding: 24px;
                         text-align: center;

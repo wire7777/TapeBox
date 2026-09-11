@@ -149,6 +149,9 @@ Files · TapeBox
                 <th>File</th>
                 <th>Path</th>
                 <th>Size</th>
+                <th>Original Created</th>
+                <th>Original Modified</th>
+                <th>Archived</th>
                 <th>Storage</th>
                 <th>Required Tape(s)</th>
             </tr>
@@ -191,6 +194,18 @@ Files · TapeBox
 
                 <td>
                     {{ file["size_bytes"] | format_bytes }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ item.original_created }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ item.original_modified }}
+                </td>
+
+                <td style="white-space: nowrap;">
+                    {{ item.archived }}
                 </td>
 
                 <td>

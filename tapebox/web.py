@@ -59,6 +59,11 @@ from tapebox.archive import (
     create_archive_selection_snapshot,
 )
 
+from tapebox.file_times import (
+    filesystem_timestamps,
+    format_timestamp,
+)
+
 from tapebox.tape import (
     discover_drives,
     get_tape_status,
@@ -1652,6 +1657,31 @@ def tape_detail_page(tape_id):
         tape_id
     )
 
+    for file_row in normal_files:
+        file_row["original_created_display"] = (
+            format_timestamp(
+                file_row.get(
+                    "original_created_at"
+                )
+            )
+        )
+
+        file_row["original_modified_display"] = (
+            format_timestamp(
+                file_row.get(
+                    "original_modified_at"
+                )
+            )
+        )
+
+        file_row["archived_display"] = (
+            format_timestamp(
+                file_row.get(
+                    "archived_at"
+                )
+            )
+        )
+
     #
     # Also find physical parts belonging to spanned logical files.
     #
@@ -1668,6 +1698,30 @@ def tape_detail_page(tape_id):
         for part in parts:
             if part["tape_id"] != tape_id:
                 continue
+
+            part["original_created_display"] = (
+                format_timestamp(
+                    file_row[
+                        "original_created_at"
+                    ]
+                )
+            )
+
+            part["original_modified_display"] = (
+                format_timestamp(
+                    file_row[
+                        "original_modified_at"
+                    ]
+                )
+            )
+
+            part["archived_display"] = (
+                format_timestamp(
+                    file_row[
+                        "archived_at"
+                    ]
+                )
+            )
 
             spanned_parts.append(
                 {
@@ -2316,6 +2370,19 @@ def files_page():
             {
                 "file": file_row,
                 "required_tapes": required_tapes,
+                "original_created": format_timestamp(
+                    file_row[
+                        "original_created_at"
+                    ]
+                ),
+                "original_modified": format_timestamp(
+                    file_row[
+                        "original_modified_at"
+                    ]
+                ),
+                "archived": format_timestamp(
+                    file_row["archived_at"]
+                ),
             }
         )
 
@@ -2514,6 +2581,10 @@ def staging_page():
             if entry.is_symlink():
                 continue
 
+            timestamps = filesystem_timestamps(
+                entry
+            )
+
             if entry.is_dir():
                 entry_type = "directory"
                 size = None
@@ -2532,6 +2603,12 @@ def staging_page():
                     "size": size,
                     "path": str(
                         entry.relative_to(root)
+                    ),
+                    "created": format_timestamp(
+                        timestamps["created_at"]
+                    ),
+                    "modified": format_timestamp(
+                        timestamps["modified_at"]
                     ),
                 }
             )
@@ -4778,6 +4855,10 @@ def restored_files_page():
                     item.relative_to(root)
                 )
 
+                timestamps = filesystem_timestamps(
+                    item
+                )
+
                 if item.is_dir():
                     rows.append(
                         {
@@ -4785,6 +4866,12 @@ def restored_files_page():
                             "path": relative,
                             "type": "directory",
                             "size": None,
+                            "created": format_timestamp(
+                                timestamps["created_at"]
+                            ),
+                            "modified": format_timestamp(
+                                timestamps["modified_at"]
+                            ),
                         }
                     )
 
@@ -4795,6 +4882,12 @@ def restored_files_page():
                             "path": relative,
                             "type": "file",
                             "size": item.stat().st_size,
+                            "created": format_timestamp(
+                                timestamps["created_at"]
+                            ),
+                            "modified": format_timestamp(
+                                timestamps["modified_at"]
+                            ),
                         }
                     )
 

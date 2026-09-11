@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -23,6 +24,10 @@ from tapebox.database import (
     update_archive_job,
 )
 
+from tapebox.file_times import (
+    filesystem_timestamps as _source_file_timestamps,
+)
+
 from tapebox.tape import (
     discover_drives,
     eject_tape,
@@ -37,9 +42,6 @@ from tapebox.tape import (
 
 ARCHIVE_MOUNTPOINT = Path("/mnt/tapebox/ltfs")
 COPY_BUFFER_SIZE = 16 * 1024 * 1024
-
-# Leave some breathing room for LTFS metadata/index updates.
-TAPE_FREE_RESERVE_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def _write_tape_metadata(
@@ -200,6 +202,12 @@ def _write_tape_manifest(
                 "size_bytes": row["size_bytes"],
                 "sha256": row["checksum_sha256"],
                 "tape_path": row["tape_path"],
+                "original_created_at": row[
+                    "original_created_at"
+                ],
+                "original_modified_at": row[
+                    "original_modified_at"
+                ],
                 "archived_at": row["archived_at"],
                 "verified_at": row["verified_at"],
                 "is_spanned": bool(
@@ -243,6 +251,12 @@ def _write_tape_manifest(
                 ],
                 "tape_path": row[
                     "tape_path"
+                ],
+                "original_created_at": row[
+                    "original_created_at"
+                ],
+                "original_modified_at": row[
+                    "original_modified_at"
                 ],
                 "archived_at": row[
                     "archived_at"
@@ -469,6 +483,10 @@ def archive_file(
             "success": False,
             "error": f"Source is not a regular file: {source}",
         }
+
+    source_timestamps = _source_file_timestamps(
+        source
+    )
 
     source_size = source.stat().st_size
 
@@ -868,6 +886,12 @@ def archive_file(
         sha256=sha256,
         tape_id=tape["id"],
         tape_path=final_destination,
+        original_created_at=(
+            source_timestamps["created_at"]
+        ),
+        original_modified_at=(
+            source_timestamps["modified_at"]
+        ),
     )
 
     manifest_result = refresh_tape_manifest(
@@ -1136,6 +1160,11 @@ def archive_folder(source_path):
                 temp_destination.unlink()
 
             digest = hashlib.sha256()
+
+            source_timestamps = _source_file_timestamps(
+                source_file
+            )
+
             source_size = source_file.stat().st_size
 
             with open(source_file, "rb") as src:
@@ -1195,6 +1224,12 @@ def archive_folder(source_path):
                     "sha256": digest.hexdigest(),
                     "tape_id": tape["id"],
                     "tape_path": tape_path,
+                    "original_created_at": (
+                        source_timestamps["created_at"]
+                    ),
+                    "original_modified_at": (
+                        source_timestamps["modified_at"]
+                    ),
                 }
             )
 
@@ -1268,6 +1303,12 @@ def archive_folder(source_path):
                 record["sha256"],
                 record["tape_id"],
                 record["tape_path"],
+                original_created_at=record.get(
+                    "original_created_at"
+                ),
+                original_modified_at=record.get(
+                    "original_modified_at"
+                ),
             )
 
             database_ids.append(
@@ -1968,6 +2009,10 @@ def archive_folder_job(
                 source
             )
 
+            source_timestamps = _source_file_timestamps(
+                source_file
+            )
+
             source_size = source_file.stat().st_size
 
             usage = shutil.disk_usage(
@@ -2195,6 +2240,16 @@ def archive_folder_job(
                         "part_sha256": (
                             part_result[
                                 "sha256"
+                            ]
+                        ),
+                        "original_created_at": (
+                            source_timestamps[
+                                "created_at"
+                            ]
+                        ),
+                        "original_modified_at": (
+                            source_timestamps[
+                                "modified_at"
                             ]
                         ),
                     }
@@ -2507,6 +2562,12 @@ def archive_folder_job(
                     "sha256": digest.hexdigest(),
                     "tape_id": tape["id"],
                     "tape_path": tape_path,
+                    "original_created_at": (
+                        source_timestamps["created_at"]
+                    ),
+                    "original_modified_at": (
+                        source_timestamps["modified_at"]
+                    ),
                 }
             )
 
@@ -2604,6 +2665,12 @@ def archive_folder_job(
                 record["tape_id"],
                 record["tape_path"],
                 archive_job_id=job_id,
+                original_created_at=record.get(
+                    "original_created_at"
+                ),
+                original_modified_at=record.get(
+                    "original_modified_at"
+                ),
             )
 
             database_ids.append(
@@ -2643,6 +2710,12 @@ def archive_folder_job(
                 part_sha256=record[
                     "part_sha256"
                 ],
+                original_created_at=record.get(
+                    "original_created_at"
+                ),
+                original_modified_at=record.get(
+                    "original_modified_at"
+                ),
             )
 
             if file_id not in database_ids:
