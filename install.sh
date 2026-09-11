@@ -9,6 +9,7 @@ MOUNT_ROOT="/mnt/tapebox"
 SERVICE_NAME="tapebox"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 UDEV_FILE="/etc/udev/rules.d/99-tapebox.rules"
+SUDOERS_FILE="/etc/sudoers.d/tapebox-rescan"
 
 if [[ $EUID -ne 0 ]]; then
     echo "Run this installer with sudo:"
@@ -30,6 +31,8 @@ required_commands=(
     lsscsi
     mt
     fusermount3
+    rescan-scsi-bus.sh
+    visudo
 )
 
 missing=0
@@ -50,7 +53,7 @@ if [[ $missing -ne 0 ]]; then
     echo "On Ubuntu / Linux Mint, typically:"
     echo
     echo "  sudo apt update"
-    echo "  sudo apt install -y python3 python3-venv python3-pip git lsscsi mt-st fuse3 attr"
+    echo "  sudo apt install -y python3 python3-venv python3-pip git lsscsi mt-st fuse3 attr sg3-utils sudo"
     echo
     exit 1
 fi
@@ -92,11 +95,20 @@ else
 fi
 
 INSTALL_USER="${SUDO_USER:-}"
+RUN_USER="${INSTALL_USER:-root}"
 
-if [[ -n "$INSTALL_USER" && "$INSTALL_USER" != "root" ]]; then
-    usermod -aG tapebox "$INSTALL_USER"
-    echo "  Added $INSTALL_USER to tapebox group"
+if [[ "$RUN_USER" == "root" ]]; then
+    echo
+    echo "WARNING:"
+    echo "Could not determine the non-root install user."
+    echo "The service would otherwise run as root."
+    echo
+    echo "Re-run this installer using sudo from your normal user account."
+    exit 1
 fi
+
+usermod -aG tapebox "$RUN_USER"
+echo "  Added $RUN_USER to tapebox group"
 
 echo
 echo "[4/9] Creating directories..."
@@ -137,6 +149,23 @@ udevadm trigger
 echo "  Installed: $UDEV_FILE"
 
 echo
+echo "  Installing restricted SCSI rescan sudo rule..."
+
+cat > "$SUDOERS_FILE" <<EOF_SUDOERS
+$RUN_USER ALL=(root) NOPASSWD: /usr/bin/rescan-scsi-bus.sh
+EOF_SUDOERS
+
+chmod 0440 "$SUDOERS_FILE"
+
+if ! visudo -cf "$SUDOERS_FILE"; then
+    echo "ERROR: Invalid sudoers configuration."
+    rm -f "$SUDOERS_FILE"
+    exit 1
+fi
+
+echo "  Installed: $SUDOERS_FILE"
+
+echo
 echo "[6/9] Creating Python virtual environment..."
 
 python3 -m venv "$APP_DIR/venv"
@@ -146,18 +175,6 @@ python3 -m venv "$APP_DIR/venv"
 
 echo
 echo "[7/9] Creating systemd service..."
-
-RUN_USER="${INSTALL_USER:-root}"
-
-if [[ "$RUN_USER" == "root" ]]; then
-    echo
-    echo "WARNING:"
-    echo "Could not determine the non-root install user."
-    echo "The service would otherwise run as root."
-    echo
-    echo "Re-run this installer using sudo from your normal user account."
-    exit 1
-fi
 
 cat > "$SERVICE_FILE" <<EOF_SERVICE
 [Unit]
