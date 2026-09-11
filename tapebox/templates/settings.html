@@ -307,7 +307,7 @@
             </div>
 
             <div>
-                <strong>Spanned Parts:</strong>
+                <strong>Spanned File Parts:</strong>
                 <span id="database-health-parts">-</span>
             </div>
 
@@ -317,13 +317,29 @@
             </div>
         </div>
 
-        <button
-            type="button"
-            id="database-check-button"
-            class="action-button"
+        <div
+            style="
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+            "
         >
-            Check Database
-        </button>
+            <button
+                type="button"
+                id="database-check-button"
+                class="action-button"
+            >
+                Check Database
+            </button>
+
+            <button
+                type="button"
+                id="database-repair-button"
+                class="action-button"
+            >
+                Repair Database
+            </button>
+        </div>
     </div>
 
     <div
@@ -545,6 +561,9 @@
     const databaseCheckButton =
         document.getElementById("database-check-button");
 
+    const databaseRepairButton =
+        document.getElementById("database-repair-button");
+
     const databaseHealthStatus =
         document.getElementById("database-health-status");
 
@@ -726,9 +745,87 @@
     }
 
 
+    async function repairDatabase() {
+        const confirmed = window.confirm(
+            "Repair the TapeBox database?\n\n"
+            + "TapeBox will create a safety backup first, "
+            + "rebuild the catalog into a new SQLite database, "
+            + "validate it, and only then install it.\n\n"
+            + "Do not power off the server during this operation."
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        databaseRepairButton.disabled = true;
+        databaseCheckButton.disabled = true;
+
+        databaseHealthStatus.textContent =
+            "REPAIRING...";
+
+        databaseHealthStatus.style.color =
+            "#ffcc00";
+
+        databaseMessage.textContent =
+            "Creating backup and rebuilding database...";
+
+        try {
+            const response = await fetch(
+                "/api/settings/database/repair",
+                {
+                    method: "POST",
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                let message =
+                    data.error ||
+                    "Database repair failed.";
+
+                if (data.rolled_back) {
+                    message +=
+                        " The original database was restored.";
+                }
+
+                throw new Error(message);
+            }
+
+            await checkDatabaseHealth();
+            await refreshDatabaseStatus();
+
+            databaseMessage.textContent =
+                "Database repaired successfully. "
+                + "Safety backup created and final "
+                + "health check passed.";
+
+        } catch (error) {
+            databaseHealthStatus.textContent =
+                "ERROR";
+
+            databaseHealthStatus.style.color =
+                "#ff5f57";
+
+            databaseMessage.textContent =
+                error.message;
+
+        } finally {
+            databaseRepairButton.disabled = false;
+            databaseCheckButton.disabled = false;
+        }
+    }
+
+
     databaseCheckButton.addEventListener(
         "click",
         checkDatabaseHealth
+    );
+
+    databaseRepairButton.addEventListener(
+        "click",
+        repairDatabase
     );
 
 

@@ -1841,7 +1841,7 @@ def backup_catalog():
 
     timestamp = datetime.now(
         timezone.utc
-    ).strftime("%Y%m%d-%H%M%S")
+    ).strftime("%Y%m%d-%H%M%S-%f")
 
     backup_path = (
         BACKUP_DIR
@@ -3101,3 +3101,227 @@ def check_catalog_health(path=None):
             db.close()
         except Exception:
             pass
+
+
+def repair_catalog_database():
+    """
+    Safely rebuild the live TapeBox SQLite catalog.
+
+    Repair procedure:
+
+      1. Validate/check the current catalog.
+      2. Create a normal TapeBox safety backup.
+      3. Rebuild SQLite into a separate temporary database
+         using VACUUM INTO.
+      4. Validate the rebuilt database.
+      5. Replace the live database only after validation.
+      6. Re-run the health check on the live catalog.
+
+    The original catalog is not modified unless the rebuilt
+    database passes validation.
+    """
+
+    if not DB_PATH.is_file():
+        return {
+            "success": False,
+            "error": (
+                "TapeBox catalog does not exist: "
+                f"{DB_PATH}"
+            ),
+        }
+
+    BACKUP_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    timestamp = datetime.now(
+        timezone.utc
+    ).strftime("%Y%m%d-%H%M%S-%f")
+
+    repaired_path = (
+        BACKUP_DIR
+        / f"catalog-repair-{timestamp}.db"
+    )
+
+    #
+    # Make a safety backup before doing anything that could
+    # eventually replace the live catalog.
+    #
+    safety_backup = backup_catalog()
+
+    source = None
+
+    try:
+        source = sqlite3.connect(
+            DB_PATH,
+            timeout=5.0,
+        )
+
+        source.execute(
+            "PRAGMA foreign_keys = ON"
+        )
+
+        #
+        # VACUUM INTO requires the destination not to exist.
+        #
+        if repaired_path.exists():
+            repaired_path.unlink()
+
+        #
+        # SQLite does not allow a bound parameter for the
+        # VACUUM INTO filename. Quote single quotes according
+        # to SQLite string-literal rules.
+        #
+        target_sql = str(
+            repaired_path
+        ).replace("'", "''")
+
+        source.execute(
+            f"VACUUM INTO '{target_sql}'"
+        )
+
+    except (sqlite3.Error, OSError) as exc:
+        try:
+            if repaired_path.exists():
+                repaired_path.unlink()
+        except OSError:
+            pass
+
+        return {
+            "success": False,
+            "error": (
+                "Database rebuild failed: "
+                f"{exc}"
+            ),
+            "safety_backup": safety_backup["path"],
+        }
+
+    finally:
+        if source is not None:
+            source.close()
+
+    #
+    # The rebuilt database must pass the existing TapeBox
+    # restore validator before it can replace anything.
+    #
+    validation = validate_catalog_database(
+        repaired_path
+    )
+
+    if not validation.get("success"):
+        return {
+            "success": False,
+            "error": (
+                "Rebuilt database failed validation: "
+                + validation.get(
+                    "error",
+                    "unknown validation error",
+                )
+            ),
+            "safety_backup": safety_backup["path"],
+            "repaired_database": str(repaired_path),
+        }
+
+    #
+    # Also run the more detailed health checker.
+    #
+    repaired_health = check_catalog_health(
+        repaired_path
+    )
+
+    if not (
+        repaired_health.get("success")
+        and repaired_health.get("healthy")
+    ):
+        return {
+            "success": False,
+            "error": (
+                "Rebuilt database failed the TapeBox "
+                "health check."
+            ),
+            "safety_backup": safety_backup["path"],
+            "repaired_database": str(repaired_path),
+            "health": repaired_health,
+        }
+
+    #
+    # restore_catalog() performs another validation and creates
+    # another pre-restore backup before replacing the live DB.
+    #
+    restored = restore_catalog(
+        repaired_path
+    )
+
+    if not restored.get("success"):
+        return {
+            "success": False,
+            "error": restored.get(
+                "error",
+                "Could not install repaired database.",
+            ),
+            "safety_backup": safety_backup["path"],
+            "repaired_database": str(repaired_path),
+        }
+
+    #
+    # Recreate any schema additions expected by this version
+    # of TapeBox.
+    #
+    initialize_database()
+    initialize_default_settings()
+
+    final_health = check_catalog_health()
+
+    if not (
+        final_health.get("success")
+        and final_health.get("healthy")
+    ):
+        #
+        # The rebuilt catalog installed, but the final
+        # verification failed. Restore the original safety
+        # backup automatically so TapeBox is not left using
+        # a catalog that failed verification.
+        #
+        rollback = restore_catalog(
+            safety_backup["path"]
+        )
+
+        initialize_database()
+        initialize_default_settings()
+
+        rollback_health = check_catalog_health()
+
+        return {
+            "success": False,
+            "error": (
+                "Repaired catalog failed final verification. "
+                "TapeBox attempted to restore the original "
+                "catalog automatically."
+            ),
+            "rolled_back": bool(
+                rollback.get("success")
+                and rollback_health.get("success")
+                and rollback_health.get("healthy")
+            ),
+            "safety_backup": safety_backup["path"],
+            "pre_install_backup": restored.get(
+                "pre_restore_backup"
+            ),
+            "repaired_database": str(repaired_path),
+            "failed_health": final_health,
+            "rollback_health": rollback_health,
+        }
+
+    return {
+        "success": True,
+        "message": "Database repaired successfully.",
+        "safety_backup": safety_backup["path"],
+        "pre_install_backup": restored.get(
+            "pre_restore_backup"
+        ),
+        "repaired_database": str(repaired_path),
+        "tapes": validation["tapes"],
+        "files": validation["files"],
+        "health": final_health,
+    }

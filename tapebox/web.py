@@ -41,6 +41,7 @@ from tapebox.database import (
     validate_catalog_database,
     restore_catalog,
     check_catalog_health,
+    repair_catalog_database,
     save_restore_operation,
     get_restore_operation,
     get_latest_resumable_restore_operation,
@@ -5292,6 +5293,51 @@ def settings_database_check_api():
     )
 
     return jsonify(result), status_code
+
+
+@app.route(
+    "/api/settings/database/repair",
+    methods=["POST"],
+)
+def settings_database_repair_api():
+    """
+    Safely rebuild and verify the live TapeBox catalog.
+    """
+
+    with OPERATION_STATE_LOCK:
+        active_operation = ACTIVE_TAPE_OPERATION_ID
+
+    if active_operation is not None:
+        return jsonify(
+            {
+                "success": False,
+                "busy": True,
+                "error": (
+                    "A tape operation is active. "
+                    "Wait for it to finish before "
+                    "repairing the database."
+                ),
+            }
+        ), 409
+
+    try:
+        result = repair_catalog_database()
+
+        status_code = (
+            200
+            if result.get("success")
+            else 500
+        )
+
+        return jsonify(result), status_code
+
+    except Exception as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
 
 
 @app.route(
