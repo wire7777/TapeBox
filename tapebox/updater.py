@@ -11,6 +11,7 @@ This module does not perform an update merely by being imported.
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -1687,4 +1688,239 @@ def rollback_update_checkpoint(
         ),
         "previous_commit": previous_commit,
         "previous_branch": previous_branch,
+    }
+
+
+
+def restart_runtime():
+    """
+    Restart TapeBox when managed by systemd.
+
+    Development installations are intentionally not restarted because the
+    developer owns the Flask process manually.
+    """
+
+    runtime_mode = detect_runtime_mode()
+
+    if runtime_mode == "development":
+        return {
+            "success": True,
+            "runtime_mode": "development",
+            "restart_performed": False,
+            "manual_restart_required": True,
+        }
+
+    if runtime_mode != "systemd":
+        raise UpdateError(
+            f"Unsupported TapeBox runtime mode: {runtime_mode}"
+        )
+
+    _run(
+        [
+            "systemctl",
+            "restart",
+            SERVICE_NAME,
+        ],
+        timeout=120,
+    )
+
+    if not systemd_service_active():
+        raise UpdateError(
+            "TapeBox systemd service did not become active "
+            "after restart."
+        )
+
+    return {
+        "success": True,
+        "runtime_mode": "systemd",
+        "restart_performed": True,
+        "manual_restart_required": False,
+    }
+
+
+def probe_http_health(
+    url="http://127.0.0.1:8080/",
+    *,
+    timeout=5,
+):
+    """
+    Perform one TapeBox HTTP health probe.
+
+    A healthy response must return HTTP 200.
+    """
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                f"TapeBox-Updater/{__version__}"
+            ),
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout,
+        ) as response:
+            status = response.getcode()
+
+            #
+            # Read a small amount so the response is actually consumed,
+            # but health checking does not need the full page.
+            #
+            response.read(
+                4096
+            )
+
+    except urllib.error.HTTPError as exc:
+        return {
+            "success": False,
+            "healthy": False,
+            "url": url,
+            "status": exc.code,
+            "error": (
+                f"HTTP {exc.code}"
+            ),
+        }
+
+    except urllib.error.URLError as exc:
+        return {
+            "success": False,
+            "healthy": False,
+            "url": url,
+            "status": None,
+            "error": str(
+                exc.reason
+            ),
+        }
+
+    except TimeoutError:
+        return {
+            "success": False,
+            "healthy": False,
+            "url": url,
+            "status": None,
+            "error": "timeout",
+        }
+
+    healthy = (
+        status == 200
+    )
+
+    return {
+        "success": healthy,
+        "healthy": healthy,
+        "url": url,
+        "status": status,
+        "error": (
+            None
+            if healthy
+            else f"Unexpected HTTP status {status}"
+        ),
+    }
+
+
+def wait_for_http_health(
+    url="http://127.0.0.1:8080/",
+    *,
+    attempts=20,
+    delay_seconds=1,
+    timeout=5,
+):
+    """
+    Wait for TapeBox to begin returning HTTP 200.
+
+    Intended for post-update startup validation.
+    """
+
+    attempts = int(
+        attempts
+    )
+
+    if attempts < 1:
+        raise UpdateError(
+            "Health-check attempts must be at least 1."
+        )
+
+    last_result = None
+
+    for attempt in range(
+        1,
+        attempts + 1,
+    ):
+        result = probe_http_health(
+            url,
+            timeout=timeout,
+        )
+
+        result[
+            "attempt"
+        ] = attempt
+
+        if result.get(
+            "healthy"
+        ):
+            result[
+                "attempts_used"
+            ] = attempt
+
+            return result
+
+        last_result = result
+
+        if attempt < attempts:
+            time.sleep(
+                delay_seconds
+            )
+
+    raise UpdateError(
+        "TapeBox failed post-update HTTP health check "
+        f"after {attempts} attempts. "
+        f"Last result: {last_result}"
+    )
+
+
+def post_update_runtime_check(
+    url="http://127.0.0.1:8080/",
+):
+    """
+    Handle runtime restart behavior after source installation.
+
+    Normal installed TapeBox:
+        restart systemd service and perform HTTP health check.
+
+    Development mode:
+        leave the manually controlled Flask process untouched and report
+        that a manual restart is required before final validation.
+    """
+
+    restart = restart_runtime()
+
+    if restart[
+        "manual_restart_required"
+    ]:
+        return {
+            "success": True,
+            "runtime_mode": "development",
+            "restart_performed": False,
+            "manual_restart_required": True,
+            "health_checked": False,
+            "message": (
+                "Development mode detected. Restart the Flask "
+                "process manually before validating the update."
+            ),
+        }
+
+    health = wait_for_http_health(
+        url
+    )
+
+    return {
+        "success": True,
+        "runtime_mode": "systemd",
+        "restart_performed": True,
+        "manual_restart_required": False,
+        "health_checked": True,
+        "health": health,
     }
