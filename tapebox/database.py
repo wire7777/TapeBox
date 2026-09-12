@@ -1687,8 +1687,11 @@ def import_tape_manifest_records(
             )
 
             recovered_original_path = (
-                f"recovered://{label}/"
-                f"{relative_path}"
+                str(entry.get("original_path") or "").strip()
+                or (
+                    f"recovered://{label}/"
+                    f"{relative_path}"
+                )
             )
 
             db.execute(
@@ -1810,8 +1813,14 @@ def import_tape_manifest_records(
 
             if parent is None:
                 recovered_original_path = (
-                    "recovered://spanned/"
-                    + relative_path
+                    str(
+                        entry.get("original_path")
+                        or ""
+                    ).strip()
+                    or (
+                        "recovered://spanned/"
+                        + relative_path
+                    )
                 )
 
                 cursor = db.execute(

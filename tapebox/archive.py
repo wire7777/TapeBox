@@ -206,6 +206,7 @@ def _write_tape_manifest(
         files.append(
             {
                 "archive_job_id": row["archive_job_id"],
+                "original_path": row["original_path"],
                 "relative_path": row["relative_path"],
                 "filename": row["filename"],
                 "size_bytes": row["size_bytes"],
@@ -236,6 +237,9 @@ def _write_tape_manifest(
             {
                 "archive_job_id": row[
                     "archive_job_id"
+                ],
+                "original_path": row[
+                    "original_path"
                 ],
                 "relative_path": row[
                     "relative_path"
