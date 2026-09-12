@@ -21,6 +21,7 @@ from tapebox.database import (
     list_tapes,
     list_files,
     list_archive_jobs,
+    create_archive_job,
     get_latest_resumable_archive_job,
     remove_archive_job_history,
     get_archive_job,
@@ -5264,7 +5265,35 @@ def staging_archive_selected_api():
             snapshot["snapshot_path"]
         )
 
+        #
+        # Persist the prepared selection before returning it to
+        # the browser. No tape I/O has started yet.
+        #
+        job_id = create_archive_job(
+            str(snapshot_path),
+            int(snapshot["file_count"]),
+            int(snapshot["total_bytes"]),
+            status="pending",
+        )
+
     except Exception as exc:
+        #
+        # Snapshot creation cleans up its own failures. If the
+        # snapshot succeeded but durable job creation failed,
+        # remove the now-orphaned hard-link snapshot here.
+        #
+        snapshot_path = locals().get(
+            "snapshot_path"
+        )
+
+        if snapshot_path is not None:
+            import shutil
+
+            shutil.rmtree(
+                snapshot_path,
+                ignore_errors=True,
+            )
+
         with OPERATION_STATE_LOCK:
             if (
                 ACTIVE_TAPE_OPERATION_ID
@@ -5282,7 +5311,7 @@ def staging_archive_selected_api():
     operation = {
         "id": operation_id,
         "type": "archive_staging_selection",
-        "job_id": None,
+        "job_id": int(job_id),
         "destination": str(
             snapshot_path
         ),
@@ -5439,7 +5468,19 @@ def staging_archive_operation_api():
         job["status"] or ""
     )
 
-    if original_status == "running":
+    if original_status == "pending":
+        message = (
+            "Insert a cartridge, then click "
+            "Start Archive."
+        )
+
+        messages = [
+            "Archive selection restored after "
+            "TapeBox restart.",
+            message,
+        ]
+
+    elif original_status == "running":
         message = (
             "Archive was interrupted. "
             "Continue archive when ready."

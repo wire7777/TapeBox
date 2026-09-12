@@ -1265,10 +1265,24 @@ def create_archive_job(
     source_path,
     total_files,
     total_bytes,
+    status="running",
 ):
     """
     Create a resumable archive job.
+
+    Normal archive jobs begin in 'running' state. Web-selected
+    archive snapshots may be created as 'pending' so the prepared
+    selection survives a TapeBox restart before tape I/O begins.
     """
+
+    if status not in {
+        "pending",
+        "running",
+    }:
+        raise ValueError(
+            "Invalid initial archive job status: "
+            f"{status}"
+        )
 
     with connect() as db:
         cursor = db.execute(
@@ -1281,10 +1295,11 @@ def create_archive_job(
                 bytes_written,
                 started_at
             )
-            VALUES (?, 'running', ?, ?, 0, ?)
+            VALUES (?, ?, ?, ?, 0, ?)
             """,
             (
                 source_path,
+                status,
                 total_files,
                 total_bytes,
                 utc_now(),
@@ -1534,6 +1549,7 @@ def get_latest_resumable_archive_job():
                 error
             FROM archive_jobs
             WHERE status IN (
+                'pending',
                 'running',
                 'waiting_for_tape'
             )
