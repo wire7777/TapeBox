@@ -890,7 +890,14 @@ def latest_github_release():
 
 def check_for_updates():
     """
-    Compare the installed TapeBox version with the latest stable release.
+    Compare the installed TapeBox build with the latest
+    stable release.
+
+    Version numbers determine whether a newer stable
+    release is available. When versions are equal, the
+    current Git commit is also compared with the release
+    commit so development/different builds are not
+    incorrectly reported as the exact stable release.
 
     No source code or database state is changed.
     """
@@ -911,6 +918,8 @@ def check_for_updates():
             f"semantic version: {__version__}"
         )
 
+    current_commit = get_current_commit()
+
     if release is None:
         return {
             "success": True,
@@ -918,10 +927,9 @@ def check_for_updates():
                 "repository"
             ],
             "current_version": __version__,
-            "current_commit": (
-                get_current_commit()
-            ),
+            "current_commit": current_commit,
             "update_available": False,
+            "release_status": "no_release",
             "latest_version": None,
             "latest_tag": None,
             "release": None,
@@ -934,9 +942,54 @@ def check_for_updates():
         release["version"]
     )
 
-    update_available = (
-        latest_parsed > current_parsed
-    )
+    if latest_parsed is None:
+        raise UpdateError(
+            "Latest TapeBox release version is not a "
+            "supported stable semantic version: "
+            f"{release['version']}"
+        )
+
+    release_commit = str(
+        release.get("commit") or ""
+    ).strip()
+
+    if latest_parsed > current_parsed:
+        release_status = "update_available"
+        update_available = True
+
+        message = (
+            f"TapeBox {release['version']} is available."
+        )
+
+    elif latest_parsed < current_parsed:
+        release_status = "ahead_of_stable"
+        update_available = False
+
+        message = (
+            "This TapeBox build is newer than the latest "
+            "stable release."
+        )
+
+    elif (
+        release_commit
+        and current_commit == release_commit
+    ):
+        release_status = "stable"
+        update_available = False
+
+        message = (
+            "TapeBox is running the latest stable release."
+        )
+
+    else:
+        release_status = "different_build"
+        update_available = False
+
+        message = (
+            "TapeBox has the same version number as the "
+            "latest stable release, but is running a "
+            "different source commit."
+        )
 
     return {
         "success": True,
@@ -944,8 +997,9 @@ def check_for_updates():
             "repository"
         ],
         "current_version": __version__,
-        "current_commit": get_current_commit(),
+        "current_commit": current_commit,
         "update_available": update_available,
+        "release_status": release_status,
         "latest_version": release[
             "version"
         ],
@@ -953,16 +1007,8 @@ def check_for_updates():
             "tag_name"
         ],
         "release": release,
-        "message": (
-            f"TapeBox {release['version']} is available."
-            if update_available
-            else (
-                "TapeBox is up to date with the latest "
-                "stable release."
-            )
-        ),
+        "message": message,
     }
-
 
 
 def fetch_github_refs():

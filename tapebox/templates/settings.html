@@ -1726,28 +1726,69 @@
                 data.latest_version ||
                 "-";
 
-            if (data.update_available) {
+            const releaseStatus =
+                data.release_status || "";
+
+            if (
+                releaseStatus === "update_available"
+            ) {
                 availability.textContent =
                     "UPDATE AVAILABLE";
 
                 availability.style.color =
                     "#ffcc00";
 
-            } else {
+            } else if (
+                releaseStatus === "stable"
+            ) {
                 availability.textContent =
                     "UP TO DATE";
 
                 availability.style.color =
                     "#35c759";
+
+            } else if (
+                releaseStatus === "different_build"
+            ) {
+                availability.textContent =
+                    "DEVELOPMENT BUILD";
+
+                availability.style.color =
+                    "#ffcc00";
+
+            } else if (
+                releaseStatus === "ahead_of_stable"
+            ) {
+                availability.textContent =
+                    "AHEAD OF STABLE";
+
+                availability.style.color =
+                    "#ffcc00";
+
+            } else if (
+                releaseStatus === "no_release"
+            ) {
+                availability.textContent =
+                    "NO STABLE RELEASE";
+
+                availability.style.color =
+                    "#ffcc00";
+
+            } else {
+                availability.textContent =
+                    data.update_available
+                    ? "UPDATE AVAILABLE"
+                    : "UNKNOWN";
+
+                availability.style.color =
+                    data.update_available
+                    ? "#ffcc00"
+                    : "#ff5f57";
             }
 
             message.textContent =
                 data.message ||
-                (
-                    data.update_available
-                    ? "A newer stable TapeBox release is available."
-                    : "TapeBox is up to date."
-                );
+                "Update status checked.";
 
         } catch (error) {
             availability.textContent =
