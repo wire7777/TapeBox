@@ -36,6 +36,9 @@
     let driveReadinessTimer = null;
     let restoreCompleted = false;
 
+    let tapeCountDebounceTimer = null;
+    let tapeCountRequestToken = 0;
+
     if (
         !selectAllButton
         || !clearAllButton
@@ -63,19 +66,65 @@
     }
 
 
-    function selectedFileIds() {
-        return selectedCheckboxes()
-            .map(
-                checkbox =>
-                    Number(
-                        checkbox.dataset.fileId
-                    )
-            )
-            .filter(
-                fileId =>
-                    Number.isInteger(fileId)
-                    && fileId > 0
+    function checkboxFileIds(checkbox) {
+        const ids = [];
+
+        const singleId =
+            Number(
+                checkbox.dataset.fileId
             );
+
+        if (
+            Number.isInteger(singleId)
+            && singleId > 0
+        ) {
+            ids.push(singleId);
+        }
+
+        const folderIds =
+            String(
+                checkbox.dataset.fileIds
+                || ""
+            )
+                .split(",")
+                .map(
+                    value =>
+                        Number(
+                            value.trim()
+                        )
+                )
+                .filter(
+                    value =>
+                        Number.isInteger(value)
+                        && value > 0
+                );
+
+        for (const fileId of folderIds) {
+            if (!ids.includes(fileId)) {
+                ids.push(fileId);
+            }
+        }
+
+        return ids;
+    }
+
+
+    function selectedFileIds() {
+        const ids = new Set();
+
+        for (
+            const checkbox
+            of selectedCheckboxes()
+        ) {
+            for (
+                const fileId
+                of checkboxFileIds(checkbox)
+            ) {
+                ids.add(fileId);
+            }
+        }
+
+        return Array.from(ids);
     }
 
 
@@ -122,8 +171,11 @@
         const selected =
             selectedCheckboxes();
 
+        const selectedIds =
+            selectedFileIds();
+
         const count =
-            selected.length;
+            selectedIds.length;
 
         const totalBytes =
             selected.reduce(
@@ -139,7 +191,7 @@
                 0
             );
 
-        summary.textContent =
+        const baseSummary =
             count
             + (
                 count === 1
@@ -148,6 +200,9 @@
             )
             + " · "
             + formatBytes(totalBytes);
+
+        summary.textContent =
+            baseSummary;
 
         clearAllButton.disabled =
             count === 0;
@@ -168,6 +223,107 @@
         planPanel.innerHTML = "";
 
         plannedFileIds = [];
+
+        scheduleTapeCountLookup(
+            selectedIds,
+            baseSummary
+        );
+    }
+
+
+    function scheduleTapeCountLookup(fileIds, baseSummary) {
+        if (tapeCountDebounceTimer) {
+            clearTimeout(
+                tapeCountDebounceTimer
+            );
+
+            tapeCountDebounceTimer = null;
+        }
+
+        const requestToken =
+            ++tapeCountRequestToken;
+
+        if (!fileIds.length) {
+            return;
+        }
+
+        tapeCountDebounceTimer =
+            setTimeout(
+                () => {
+                    fetchTapeCount(
+                        fileIds,
+                        baseSummary,
+                        requestToken
+                    );
+                },
+                350
+            );
+    }
+
+
+    async function fetchTapeCount(fileIds, baseSummary, requestToken) {
+        try {
+            const response =
+                await fetch(
+                    "/api/files/restore-plan",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+                        body: JSON.stringify({
+                            file_ids: fileIds
+                        })
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            /*
+             * A newer selection change or an active operation
+             * may have superseded this request while it was in
+             * flight — discard a stale response.
+             */
+            if (
+                requestToken !== tapeCountRequestToken
+                || activeOperationId
+            ) {
+                return;
+            }
+
+            if (!response.ok || !data.success) {
+                return;
+            }
+
+            const tapeCount =
+                Array.isArray(
+                    data.required_tapes
+                )
+                ? data.required_tapes.length
+                : 0;
+
+            summary.textContent =
+                baseSummary
+                + " · requires "
+                + tapeCount
+                + (
+                    tapeCount === 1
+                    ? " tape"
+                    : " tapes"
+                );
+
+        } catch (error) {
+            /*
+             * Silently keep the base summary — tape count is a
+             * nice-to-have, not worth surfacing an error for.
+             */
+            console.error(
+                "Tape count lookup failed:",
+                error
+            );
+        }
     }
 
 
@@ -1298,11 +1454,18 @@
                 const checkbox
                 of checkboxes()
             ) {
+                const checkboxIds =
+                    checkboxFileIds(
+                        checkbox
+                    );
+
                 checkbox.checked =
-                    selectedIdSet.has(
-                        Number(
-                            checkbox.dataset.fileId
-                        )
+                    checkboxIds.length > 0
+                    && checkboxIds.every(
+                        fileId =>
+                            selectedIdSet.has(
+                                fileId
+                            )
                     );
             }
 

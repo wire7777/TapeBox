@@ -587,7 +587,7 @@
 
             {% else %}
 
-                📄 {{ row.name }}
+                {{ row.name | file_icon }} {{ row.name }}
 
             {% endif %}
 

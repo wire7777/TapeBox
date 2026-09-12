@@ -524,6 +524,31 @@ button:hover {
     color: #596474;
 }
 
+.file-name {
+    max-width: 260px;
+
+    display: block;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-type-badge {
+    display: inline-block;
+
+    padding: 1px 5px;
+
+    border: 1px solid;
+    border-radius: 2px;
+
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+
+    vertical-align: 1px;
+}
+
 .storage-badge,
 .tape-badge {
     display: inline-block;
@@ -544,6 +569,12 @@ button:hover {
     border-color: #715d2e;
 
     color: #e4bd63;
+}
+
+.storage-badge.single {
+    border-color: #2f6b45;
+
+    color: #6fcf97;
 }
 
 .tape-badge {

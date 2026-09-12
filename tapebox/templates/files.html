@@ -64,12 +64,66 @@ Files · TapeBox
             </h2>
 
             <p>
-                {{ rows | length }}
-                file{% if rows | length != 1 %}s{% endif %}
+                {% if query %}
+                    {{ rows | length }}
+                    file{% if rows | length != 1 %}s{% endif %}
+                {% else %}
+                    {{ folder_count }} folder{% if folder_count != 1 %}s{% endif %}
+                    ·
+                    {{ file_count }} file{% if file_count != 1 %}s{% endif %}
+                {% endif %}
             </p>
 
         </div>
     </div>
+
+
+    {% if not query %}
+
+    <div
+        style="
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        "
+    >
+        <strong>Location:</strong>
+
+        <a
+            href="{{ url_for('files_page') }}"
+            class="button secondary"
+            style="
+                padding: 5px 9px;
+            "
+        >
+            /
+        </a>
+
+        {% if current_path %}
+            <span class="path">
+                /{{ current_path }}
+            </span>
+        {% endif %}
+
+        {% if current_path %}
+        <a
+            href="{{ url_for(
+                'files_page',
+                path=parent_path
+            ) }}"
+            class="button secondary"
+            style="
+                padding: 5px 9px;
+            "
+        >
+            ↑ Parent Folder
+        </a>
+        {% endif %}
+    </div>
+
+    {% endif %}
 
 
     {% if rows %}
@@ -161,6 +215,70 @@ Files · TapeBox
 
             {% for item in rows %}
 
+            {% if item.type == "directory" %}
+
+            <tr>
+
+                <td
+                    style="
+                        text-align: center;
+                    "
+                >
+                    <input
+                        type="checkbox"
+                        class="files-select-checkbox"
+                        data-folder="1"
+                        data-file-ids="{{ item.file_ids | join(',') }}"
+                        data-size="{{ item.size_bytes }}"
+                    >
+                </td>
+
+                <td>
+                    <div class="strong file-name" title="{{ item.name }}">
+                        📁
+                        <a
+                            href="{{ url_for(
+                                'files_page',
+                                path=item.path
+                            ) }}"
+                        >
+                            {{ item.name | archive_label }}
+                        </a>
+                    </div>
+
+                    <div class="subtext">
+                        {{ item.file_count }}
+                        file{% if item.file_count != 1 %}s{% endif %}
+                        recursively
+                    </div>
+                </td>
+
+                <td class="path">
+                    {{ item.path }}/
+                </td>
+
+                <td>
+                    {{ item.size_bytes | format_bytes }}
+                </td>
+
+                <td class="muted">—</td>
+                <td class="muted">—</td>
+                <td class="muted">—</td>
+
+                <td>
+                    <span class="storage-badge">
+                        FOLDER
+                    </span>
+                </td>
+
+                <td class="muted">
+                    Calculated when restoring
+                </td>
+
+            </tr>
+
+            {% else %}
+
             {% set file = item.file %}
 
             <tr>
@@ -179,8 +297,8 @@ Files · TapeBox
                 </td>
 
                 <td>
-                    <div class="strong">
-                        {{ file["filename"] }}
+                    <div class="strong file-name" title="{{ file['filename'] }}">
+                        {{ file["filename"] | file_icon }} {{ file["filename"] }}
                     </div>
 
                     <div class="subtext">
@@ -218,7 +336,7 @@ Files · TapeBox
 
                     {% else %}
 
-                    <span class="storage-badge">
+                    <span class="storage-badge single">
                         SINGLE TAPE
                     </span>
 
@@ -249,6 +367,8 @@ Files · TapeBox
                 </td>
 
             </tr>
+
+            {% endif %}
 
             {% endfor %}
 

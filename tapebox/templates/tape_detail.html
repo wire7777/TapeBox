@@ -229,7 +229,7 @@
 
             <tr>
                 <td class="strong">
-                    {{ file["filename"] }}
+                    {{ file["filename"] | file_icon }} {{ file["filename"] }}
                 </td>
 
                 <td class="path">
@@ -305,7 +305,7 @@
             <tr>
                 <td>
                     <div class="strong">
-                        {{ part["filename"] }}
+                        {{ part["filename"] | file_icon }} {{ part["filename"] }}
                     </div>
 
                     <div class="subtext">

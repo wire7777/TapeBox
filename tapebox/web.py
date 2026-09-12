@@ -772,6 +772,164 @@ def format_bytes(value):
 app.jinja_env.filters["format_bytes"] = format_bytes
 
 
+import re as _re
+from datetime import datetime as _datetime
+
+_ARCHIVE_NAME_RE = _re.compile(
+    r"^Archive-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-([0-9a-fA-F]{6,})$"
+)
+
+
+def archive_label(name):
+    """
+    Turn an auto-generated archive folder name like
+    "Archive-20260911-165709-a021aae1" into a readable
+    "Sep 11, 2026 · 4:57 PM · #a021aae1". Names that don't match
+    the pattern (custom-renamed folders, "archive", etc.) pass
+    through unchanged.
+    """
+
+    match = _ARCHIVE_NAME_RE.match(name or "")
+
+    if not match:
+        return name
+
+    year, month, day, hour, minute, second, short_hash = (
+        match.groups()
+    )
+
+    try:
+        dt = _datetime(
+            int(year), int(month), int(day),
+            int(hour), int(minute), int(second),
+        )
+    except ValueError:
+        return name
+
+    date_part = dt.strftime("%b %-d, %Y")
+    time_part = dt.strftime("%-I:%M %p")
+
+    return f"{date_part} · {time_part} · #{short_hash[:8]}"
+
+
+app.jinja_env.filters["archive_label"] = archive_label
+
+
+from markupsafe import Markup as _Markup
+
+_VIDEO_EXTS = {
+    "mp4", "avi", "mov", "mkv", "wmv",
+    "flv", "webm", "m4v", "mpg", "mpeg",
+}
+
+_AUDIO_EXTS = {
+    "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma",
+}
+
+_IMAGE_EXTS = {
+    "jpg", "jpeg", "png", "gif", "bmp",
+    "svg", "webp", "tiff", "ico",
+}
+
+_ARCHIVE_EXTS = {
+    "zip", "tar", "gz", "tgz", "rar", "7z", "bz2", "xz",
+}
+
+_TEXT_EXTS = {
+    "txt", "log", "rst", "ini", "cfg", "conf",
+}
+
+# (label shown in the badge, border/text color) — colors loosely follow
+# GitHub's per-language palette so common extensions are visually distinct.
+_CODE_BADGES = {
+    "py":    ("PY",   "#4fa8e0"),
+    "c":     ("C",    "#8aa6c1"),
+    "h":     ("C",    "#8aa6c1"),
+    "cpp":   ("C++",  "#e37fa6"),
+    "cc":    ("C++",  "#e37fa6"),
+    "cxx":   ("C++",  "#e37fa6"),
+    "hpp":   ("C++",  "#e37fa6"),
+    "cs":    ("C#",   "#9d7bea"),
+    "js":    ("JS",   "#e0c34f"),
+    "jsx":   ("JSX",  "#e0c34f"),
+    "ts":    ("TS",   "#4f8be0"),
+    "tsx":   ("TSX",  "#4f8be0"),
+    "java":  ("JAVA", "#d99a4e"),
+    "go":    ("GO",   "#4fc3e0"),
+    "rs":    ("RS",   "#e0904f"),
+    "rb":    ("RB",   "#e05a5a"),
+    "php":   ("PHP",  "#8b93e0"),
+    "sh":    ("SH",   "#6fd18a"),
+    "bash":  ("SH",   "#6fd18a"),
+    "sql":   ("SQL",  "#e0a24f"),
+    "html":  ("HTML", "#e0824f"),
+    "css":   ("CSS",  "#8b93e0"),
+    "json":  ("JSON", "#9ca3af"),
+    "yaml":  ("YML",  "#e07a7a"),
+    "yml":   ("YML",  "#e07a7a"),
+    "xml":   ("XML",  "#6fa8e0"),
+    "swift": ("SW",   "#e07a8f"),
+    "kt":    ("KT",   "#b48bea"),
+    "md":    ("MD",   "#9ca3af"),
+}
+
+
+def file_icon(filename):
+    """
+    Return a small icon/badge for a file, based on its extension.
+    Broad, visually-obvious types (video, audio, image, archive, PDF)
+    get a single recognizable emoji. Code files get a compact colored
+    language badge instead, since a single emoji can't distinguish
+    ".py" from ".cs" from ".c". Unrecognized extensions fall back to
+    the plain document emoji.
+    """
+
+    if not filename or "." not in filename:
+        return _Markup("📄")
+
+    ext = filename.rsplit(".", 1)[-1].lower()
+
+    if ext in _VIDEO_EXTS:
+        return _Markup("🎬")
+
+    if ext in _AUDIO_EXTS:
+        return _Markup("🎵")
+
+    if ext in _IMAGE_EXTS:
+        return _Markup("🖼️")
+
+    if ext in _ARCHIVE_EXTS:
+        return _Markup("🗜️")
+
+    if ext == "pdf":
+        return _Markup("📕")
+
+    if ext in ("xls", "xlsx"):
+        return _Markup("📊")
+
+    if ext in ("ppt", "pptx"):
+        return _Markup("📽️")
+
+    if ext in ("doc", "docx"):
+        return _Markup("📃")
+
+    if ext in _TEXT_EXTS:
+        return _Markup("📝")
+
+    if ext in _CODE_BADGES:
+        label, color = _CODE_BADGES[ext]
+        return _Markup(
+            '<span class="file-type-badge" '
+            f'style="border-color:{color};color:{color}">'
+            f"{label}</span>"
+        )
+
+    return _Markup("📄")
+
+
+app.jinja_env.filters["file_icon"] = file_icon
+
+
 def get_drive_summary():
     drives = discover_drives()
 
@@ -2577,8 +2735,6 @@ def files_restore_start_api():
 
 @app.route("/files")
 def files_page():
-    from flask import request
-
     initialize_database()
 
     query = request.args.get(
@@ -2586,16 +2742,181 @@ def files_page():
         "",
     ).strip()
 
+    requested_path = request.args.get(
+        "path",
+        "",
+    ).strip().strip("/")
+
+    #
+    # Search keeps the existing flat result behavior.
+    # Folder browsing is used only when no search query
+    # is active.
+    #
     if query:
-        files = search_files(
-            query
+        files = search_files(query)
+
+        rows = []
+
+        for file_row in files:
+            required_tapes = []
+
+            if file_row["is_spanned"]:
+                parts = get_file_parts(
+                    file_row["id"]
+                )
+
+                for part in parts:
+                    label = (
+                        part["tape_label"]
+                        or part["ltfs_uuid"]
+                        or f"Tape #{part['tape_id']}"
+                    )
+
+                    if label not in required_tapes:
+                        required_tapes.append(label)
+
+            else:
+                label = (
+                    file_row["tape_label"]
+                    or file_row["ltfs_uuid"]
+                    or "-"
+                )
+
+                if label != "-":
+                    required_tapes.append(label)
+
+            rows.append(
+                {
+                    "type": "file",
+                    "file": file_row,
+                    "required_tapes": required_tapes,
+                    "original_created": format_timestamp(
+                        file_row["original_created_at"]
+                    ),
+                    "original_modified": format_timestamp(
+                        file_row["original_modified_at"]
+                    ),
+                    "archived": format_timestamp(
+                        file_row["archived_at"]
+                    ),
+                }
+            )
+
+        return render_template(
+            "files.html",
+            active_page="files",
+            query=query,
+            current_path="",
+            parent_path=None,
+            rows=rows,
+            folder_count=0,
+            file_count=len(rows),
         )
-    else:
-        files = list_files()
+
+    #
+    # Catalog folder browser.
+    #
+    # relative_path is the logical archived path. We derive
+    # directories from it instead of storing duplicate folder
+    # records in SQLite.
+    #
+    files = list_files()
+
+    current_parts = tuple(
+        part
+        for part in requested_path.split("/")
+        if part
+    )
+
+    current_path = "/".join(current_parts)
+
+    parent_path = None
+
+    if current_parts:
+        parent_path = "/".join(
+            current_parts[:-1]
+        )
+
+    folders = {}
+    visible_files = []
+
+    prefix_length = len(current_parts)
+
+    for file_row in files:
+        relative_path = str(
+            file_row["relative_path"] or ""
+        ).strip("/")
+
+        parts = tuple(
+            part
+            for part in relative_path.split("/")
+            if part
+        )
+
+        if not parts:
+            continue
+
+        #
+        # File must live underneath the requested virtual
+        # directory.
+        #
+        if (
+            len(parts) <= prefix_length
+            or parts[:prefix_length] != current_parts
+        ):
+            continue
+
+        remainder = parts[prefix_length:]
+
+        if len(remainder) > 1:
+            folder_name = remainder[0]
+
+            folder_path = "/".join(
+                current_parts + (folder_name,)
+            )
+
+            folder = folders.setdefault(
+                folder_name,
+                {
+                    "type": "directory",
+                    "name": folder_name,
+                    "path": folder_path,
+                    "size_bytes": 0,
+                    "file_count": 0,
+                    "file_ids": [],
+                },
+            )
+
+            folder["size_bytes"] += int(
+                file_row["size_bytes"] or 0
+            )
+
+            folder["file_count"] += 1
+            folder["file_ids"].append(
+                int(file_row["id"])
+            )
+
+            continue
+
+        visible_files.append(file_row)
 
     rows = []
 
-    for file_row in files:
+    for folder in sorted(
+        folders.values(),
+        key=lambda item: item["name"].casefold(),
+    ):
+        rows.append(folder)
+
+    for file_row in sorted(
+        visible_files,
+        key=lambda item: (
+            str(
+                item["filename"] or ""
+            ).casefold(),
+            int(item["id"]),
+        ),
+    ):
         required_tapes = []
 
         if file_row["is_spanned"]:
@@ -2611,9 +2932,7 @@ def files_page():
                 )
 
                 if label not in required_tapes:
-                    required_tapes.append(
-                        label
-                    )
+                    required_tapes.append(label)
 
         else:
             label = (
@@ -2623,23 +2942,18 @@ def files_page():
             )
 
             if label != "-":
-                required_tapes.append(
-                    label
-                )
+                required_tapes.append(label)
 
         rows.append(
             {
+                "type": "file",
                 "file": file_row,
                 "required_tapes": required_tapes,
                 "original_created": format_timestamp(
-                    file_row[
-                        "original_created_at"
-                    ]
+                    file_row["original_created_at"]
                 ),
                 "original_modified": format_timestamp(
-                    file_row[
-                        "original_modified_at"
-                    ]
+                    file_row["original_modified_at"]
                 ),
                 "archived": format_timestamp(
                     file_row["archived_at"]
@@ -2650,10 +2964,13 @@ def files_page():
     return render_template(
         "files.html",
         active_page="files",
-        query=query,
+        query="",
+        current_path=current_path,
+        parent_path=parent_path,
         rows=rows,
+        folder_count=len(folders),
+        file_count=len(visible_files),
     )
-
 
 
 def _get_restored_files_root():

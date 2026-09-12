@@ -516,7 +516,7 @@ Job #{{ job["id"] }} · TapeBox
         <tr>
 
             <td class="strong">
-                {{ file["filename"] }}
+                {{ file["filename"] | file_icon }} {{ file["filename"] }}
             </td>
 
             <td class="path">

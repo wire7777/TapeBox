@@ -488,6 +488,69 @@ Tape Inspector - TapeBox
         "inspector-label"
     );
 
+
+    /*
+     * Mirrors the server-side file_icon Jinja filter (web.py) for
+     * rows rendered client-side here. This list uses textContent
+     * rather than innerHTML, so — unlike the catalog pages — code
+     * files get a generic icon rather than a colored language badge.
+     */
+    const VIDEO_EXTS = new Set([
+        "mp4", "avi", "mov", "mkv", "wmv",
+        "flv", "webm", "m4v", "mpg", "mpeg"
+    ]);
+
+    const AUDIO_EXTS = new Set([
+        "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"
+    ]);
+
+    const IMAGE_EXTS = new Set([
+        "jpg", "jpeg", "png", "gif", "bmp",
+        "svg", "webp", "tiff", "ico"
+    ]);
+
+    const ARCHIVE_EXTS = new Set([
+        "zip", "tar", "gz", "tgz", "rar", "7z", "bz2", "xz"
+    ]);
+
+    const TEXT_EXTS = new Set([
+        "txt", "log", "rst", "ini", "cfg", "conf", "md"
+    ]);
+
+    const CODE_EXTS = new Set([
+        "py", "c", "h", "cpp", "cc", "cxx", "hpp", "cs",
+        "js", "jsx", "ts", "tsx", "java", "go", "rs", "rb",
+        "php", "sh", "bash", "sql", "html", "css", "json",
+        "yaml", "yml", "xml", "swift", "kt"
+    ]);
+
+    function fileIcon(name) {
+        const dotIndex =
+            String(name || "").lastIndexOf(".");
+
+        if (dotIndex < 0) {
+            return "📄";
+        }
+
+        const ext =
+            String(name)
+                .slice(dotIndex + 1)
+                .toLowerCase();
+
+        if (VIDEO_EXTS.has(ext)) return "🎬";
+        if (AUDIO_EXTS.has(ext)) return "🎵";
+        if (IMAGE_EXTS.has(ext)) return "🖼️";
+        if (ARCHIVE_EXTS.has(ext)) return "🗜️";
+        if (ext === "pdf") return "📕";
+        if (ext === "xls" || ext === "xlsx") return "📊";
+        if (ext === "ppt" || ext === "pptx") return "📽️";
+        if (ext === "doc" || ext === "docx") return "📃";
+        if (TEXT_EXTS.has(ext)) return "📝";
+        if (CODE_EXTS.has(ext)) return "💻";
+
+        return "📄";
+    }
+
     const browserUpButton = document.getElementById(
         "browser-up-button"
     );
@@ -1157,7 +1220,7 @@ Tape Inspector - TapeBox
                     (
                         item.type === "directory"
                         ? "📁 "
-                        : "📄 "
+                        : fileIcon(item.name) + " "
                     )
                     + item.name;
             }
