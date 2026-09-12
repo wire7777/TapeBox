@@ -1680,6 +1680,43 @@ def operation_resume_api(operation_id):
     )
 
 
+@app.route("/health")
+def health_api():
+    """
+    Lightweight TapeBox service health check.
+
+    This checks the web application and catalog database only.
+    It does not access, mount, load, or inspect a tape.
+    """
+
+    try:
+        catalog = check_catalog_health()
+
+        healthy = bool(
+            catalog.get("success")
+            and catalog.get("healthy")
+        )
+
+        return jsonify(
+            {
+                "success": healthy,
+                "healthy": healthy,
+                "service": "tapebox",
+                "catalog": catalog,
+            }
+        ), (200 if healthy else 503)
+
+    except Exception as exc:
+        return jsonify(
+            {
+                "success": False,
+                "healthy": False,
+                "service": "tapebox",
+                "error": str(exc),
+            }
+        ), 503
+
+
 @app.route("/api/tape/status")
 def tape_status_api():
     #
