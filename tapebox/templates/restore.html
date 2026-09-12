@@ -2,6 +2,8 @@
 
 {% block title %}
 Restore · TapeBox
+
+
 {% endblock %}
 
 
@@ -85,6 +87,7 @@ Restore · TapeBox
                 </td>
 
                 <td>
+                    {% if job["status"] == "completed" %}
                     <a
                         class="action-button"
                         href="{{
@@ -96,6 +99,21 @@ Restore · TapeBox
                     >
                         Restore
                     </a>
+                    {% endif %}
+
+                    {% if job["status"] in [
+                        "completed",
+                        "error",
+                        "cancelled"
+                    ] %}
+                    <button
+                        class="action-button"
+                        type="button"
+                        data-remove-job-id="{{ job['id'] }}"
+                    >
+                        Remove from History
+                    </button>
+                    {% endif %}
                 </td>
 
             </tr>
@@ -117,5 +135,97 @@ Restore · TapeBox
     {% endif %}
 
 </section>
+
+<script>
+(() => {
+    const removeButtons = document.querySelectorAll(
+        "[data-remove-job-id]"
+    );
+
+    for (const button of removeButtons) {
+        button.addEventListener(
+            "click",
+            async () => {
+                const jobId = button.dataset.removeJobId;
+
+                let confirmed;
+
+                if (window.tapeboxConfirm) {
+                    confirmed = await window.tapeboxConfirm({
+                        title: "Remove from History?",
+                        message:
+                            "Remove Archive Job #"
+                            + jobId
+                            + " from history?",
+                        detail:
+                            "Archived files on tape and "
+                            + "TapeBox catalog records will "
+                            + "NOT be deleted.",
+                        confirmText: "Remove from History",
+                        danger: true,
+                    });
+                } else {
+                    confirmed = window.confirm(
+                        "Remove Archive Job #"
+                        + jobId
+                        + " from history?\n\n"
+                        + "Archived files on tape and "
+                        + "TapeBox catalog records will "
+                        + "NOT be deleted."
+                    );
+                }
+
+                if (!confirmed) {
+                    return;
+                }
+
+                button.disabled = true;
+                button.textContent = "Removing...";
+
+                try {
+                    const response = await fetch(
+                        "/api/archive-jobs/"
+                        + encodeURIComponent(jobId)
+                        + "/history",
+                        {
+                            method: "DELETE",
+                            cache: "no-store",
+                        }
+                    );
+
+                    const data = await response.json();
+
+                    if (
+                        !response.ok
+                        || !data.success
+                    ) {
+                        throw new Error(
+                            data.error
+                            || "Could not remove archive job."
+                        );
+                    }
+
+                    window.location.reload();
+
+                } catch (error) {
+                    button.disabled = false;
+                    button.textContent =
+                        "Remove from History";
+
+                    if (window.tapeboxAlert) {
+                        await window.tapeboxAlert({
+                            title:
+                                "Could Not Remove History",
+                            message: error.message,
+                        });
+                    } else {
+                        window.alert(error.message);
+                    }
+                }
+            }
+        );
+    }
+})();
+</script>
 
 {% endblock %}

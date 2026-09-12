@@ -21,6 +21,7 @@ from tapebox.database import (
     list_tapes,
     list_files,
     list_archive_jobs,
+    remove_archive_job_history,
     get_archive_job,
     update_archive_job,
     get_archive_job_files,
@@ -1646,6 +1647,65 @@ def restore_page():
         "restore.html",
         active_page="restore",
         jobs=jobs,
+    )
+
+
+@app.route(
+    "/api/archive-jobs/<int:job_id>/history",
+    methods=["DELETE"],
+)
+def archive_job_history_delete_api(job_id):
+    """
+    Remove a finished archive job from operational history.
+
+    This does not delete cataloged files, file parts,
+    tape records, staging files, restored files, or any
+    physical data stored on tape.
+    """
+    initialize_database()
+
+    try:
+        result = remove_archive_job_history(
+            job_id
+        )
+
+    except ValueError as exc:
+        message = str(exc)
+
+        if "does not exist" in message:
+            status_code = 404
+        else:
+            status_code = 409
+
+        return jsonify(
+            {
+                "success": False,
+                "error": message,
+            }
+        ), status_code
+
+    except Exception as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "job_id": job_id,
+            "detached_files": result.get(
+                "detached_files",
+                0,
+            ),
+            "message": (
+                f"Archive job #{job_id} removed "
+                "from history. Archived data was "
+                "not deleted."
+            ),
+        }
     )
 
 

@@ -1316,6 +1316,99 @@ def update_archive_job(
         )
 
 
+
+def remove_archive_job_history(job_id):
+    """
+    Remove one finished archive job from operational history.
+
+    This deliberately preserves the archive catalog.
+
+    Cataloged files are detached from the historical job by
+    setting files.archive_job_id to NULL. Files, file_parts,
+    tapes, tape paths, checksums, and tape contents are never
+    deleted by this operation.
+    """
+    with connect() as db:
+        job = db.execute(
+            """
+            SELECT
+                id,
+                status
+            FROM archive_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+
+        if job is None:
+            raise ValueError(
+                f"Archive job #{job_id} does not exist."
+            )
+
+        status = str(
+            job["status"] or ""
+        ).strip().lower()
+
+        #
+        # Never allow an active/resumable job to disappear.
+        #
+        if status not in {
+            "completed",
+            "error",
+            "cancelled",
+        }:
+            raise ValueError(
+                f"Archive job #{job_id} cannot be removed "
+                f"while its status is '{status}'."
+            )
+
+        #
+        # Preserve all cataloged files. Their archive-job
+        # relationship is historical metadata only.
+        #
+        cursor = db.execute(
+            """
+            UPDATE files
+            SET archive_job_id = NULL
+            WHERE archive_job_id = ?
+            """,
+            (job_id,),
+        )
+
+        detached_files = cursor.rowcount
+
+        #
+        # job_events are operational history and can go away
+        # with the archive job.
+        #
+        db.execute(
+            """
+            DELETE FROM job_events
+            WHERE archive_job_id = ?
+            """,
+            (job_id,),
+        )
+
+        cursor = db.execute(
+            """
+            DELETE FROM archive_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        )
+
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                f"Archive job #{job_id} was not removed."
+            )
+
+        return {
+            "job_id": job_id,
+            "status": status,
+            "detached_files": detached_files,
+        }
+
+
 def list_archive_jobs():
     """
     Return archive jobs newest first.
