@@ -2,6 +2,7 @@ import hashlib
 import time
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 
 from tapebox.database import (
     get_file_by_id,
@@ -799,6 +800,11 @@ def _restore_spanned_from_mounted_tape(
                 final_destination,
             )
 
+            _restore_original_modified_time(
+                final_destination,
+                row["original_modified_at"],
+            )
+
             directory_fd = os.open(
                 parent,
                 os.O_RDONLY,
@@ -1047,6 +1053,11 @@ def _restore_spanned_file(
             and checksum
             == row["checksum_sha256"]
         ):
+            _restore_original_modified_time(
+                final_destination,
+                row["original_modified_at"],
+            )
+
             return {
                 "success": True,
                 "completed": True,
@@ -1655,6 +1666,11 @@ def restore_file(
                 final_destination,
             )
 
+            _restore_original_modified_time(
+                final_destination,
+                row["original_modified_at"],
+            )
+
             #
             # Flush the destination directory so the rename
             # is committed before reporting success.
@@ -1724,6 +1740,63 @@ def restore_file(
                 pass
 
     return result
+
+
+def _restore_original_modified_time(
+    path,
+    original_modified_at,
+):
+    """
+    Restore the cataloged original modification time.
+
+    Creation/birth time is intentionally not changed because
+    Linux does not provide a portable way to set it.
+
+    Older catalog rows may have no original_modified_at; those
+    restored files are left unchanged.
+    """
+
+    if not original_modified_at:
+        return False
+
+    value = str(
+        original_modified_at
+    ).strip()
+
+    if not value:
+        return False
+
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(
+            value
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "Catalog contains an invalid original "
+            f"modified timestamp: {value}"
+        ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(
+            tzinfo=timezone.utc
+        )
+
+    path = Path(path)
+
+    stat_result = path.stat()
+
+    os.utime(
+        path,
+        (
+            stat_result.st_atime,
+            parsed.timestamp(),
+        ),
+    )
+
+    return True
 
 
 def _sha256_file(path):
@@ -2126,6 +2199,11 @@ def _restore_catalog_files(
                     f"be overwritten: {output}"
                 ),
             }
+
+        _restore_original_modified_time(
+            output,
+            row["original_modified_at"],
+        )
 
         completed_ids.add(
             row["id"]
@@ -2643,6 +2721,11 @@ def _restore_catalog_files(
                     os.replace(
                         partial,
                         output,
+                    )
+
+                    _restore_original_modified_time(
+                        output,
+                        row["original_modified_at"],
                     )
 
                     directory_fd = os.open(
