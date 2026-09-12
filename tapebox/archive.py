@@ -43,6 +43,14 @@ from tapebox.tape import (
 ARCHIVE_MOUNTPOINT = Path("/mnt/tapebox/ltfs")
 COPY_BUFFER_SIZE = 16 * 1024 * 1024
 
+#
+# Keep a small amount of LTFS capacity unused so archive/spanning
+# calculations never plan writes all the way to filesystem-full.
+#
+# The spanning code below explicitly expects a real 4 GiB reserve.
+#
+TAPE_FREE_RESERVE_BYTES = 4 * 1024 * 1024 * 1024
+
 
 def _write_tape_metadata(
     mountpoint,
