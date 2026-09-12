@@ -75,6 +75,7 @@ from tapebox.tape import (
     _is_mounted,
     _unmount_ltfs,
     eject_tape,
+    load_tape,
     format_ltfs,
 )
 
@@ -7488,6 +7489,117 @@ def inspector_unmount_api():
         }
     )
 
+
+
+@app.route(
+    "/api/inspector/load",
+    methods=["POST"],
+)
+def inspector_load_api():
+    global ACTIVE_TAPE_OPERATION_ID
+
+    inspector_owner = "inspector-load"
+
+    #
+    # Loading the cartridge is a physical drive operation.
+    # Reserve the drive so archive/restore/Inspector cannot
+    # touch it at the same time.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "currently active."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            inspector_owner
+        )
+
+    try:
+        mount_path = Path(
+            "/mnt/tapebox/ltfs-inspect"
+        )
+
+        if _is_mounted(mount_path):
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Tape Inspector is already mounted."
+                    ),
+                }
+            ), 409
+
+        drives = discover_drives()
+
+        if not drives:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "No tape drive detected.",
+                }
+            ), 404
+
+        drive = drives[0]
+
+        nst_device = drive.get(
+            "nst_device"
+        )
+
+        if not nst_device:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape device could not be resolved."
+                    ),
+                }
+            ), 500
+
+        result = load_tape(
+            nst_device
+        )
+
+        if not result.get("success"):
+            return jsonify(
+                {
+                    "success": False,
+                    "loaded": False,
+                    "error": (
+                        result.get("error")
+                        or "Tape load failed."
+                    ),
+                }
+            ), 500
+
+        return jsonify(
+            {
+                "success": True,
+                "loaded": True,
+                "drive": drive.get(
+                    "description"
+                ),
+                "message": (
+                    "Cartridge loaded and drive is online."
+                ),
+            }
+        )
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == inspector_owner
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
 
 
 @app.route(

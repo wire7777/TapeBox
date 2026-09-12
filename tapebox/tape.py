@@ -895,6 +895,93 @@ def eject_tape(
     }
 
 
+
+def load_tape(
+    device="/dev/tapebox-drive-nst",
+    timeout=120,
+):
+    """
+    Pull a physically presented/ejected cartridge back
+    into the tape drive and wait until it is online.
+
+    The caller must ensure no LTFS mount or other tape
+    operation currently owns the physical drive.
+    """
+
+    result = run_command(
+        [
+            "mt",
+            "-f",
+            device,
+            "load",
+        ],
+        timeout=timeout,
+    )
+
+    if result["returncode"] != 0:
+        error_text = (
+            result["stderr"]
+            or result["stdout"]
+            or "Unknown tape load error"
+        )
+
+        return {
+            "success": False,
+            "device": device,
+            "error": error_text,
+        }
+
+    #
+    # mt load may return before the drive has completely
+    # finished pulling in and loading the cartridge.
+    #
+    # Wait for the tape driver to report ONLINE before
+    # telling the caller that loading is complete.
+    #
+    settle_deadline = time.monotonic() + 120.0
+    last_status_text = ""
+
+    while time.monotonic() < settle_deadline:
+        status_result = run_command(
+            [
+                "mt",
+                "-f",
+                device,
+                "status",
+            ],
+            timeout=10,
+        )
+
+        last_status_text = (
+            status_result.get("stdout", "")
+            + "\n"
+            + status_result.get("stderr", "")
+        )
+
+        if (
+            status_result.get("returncode") == 0
+            and "ONLINE" in last_status_text
+            and "DR_OPEN" not in last_status_text
+        ):
+            return {
+                "success": True,
+                "device": device,
+            }
+
+        time.sleep(1.0)
+
+    return {
+        "success": False,
+        "device": device,
+        "error": (
+            "Tape load command succeeded, but the drive "
+            "did not report ONLINE within 120 seconds. "
+            "Last status: "
+            + last_status_text.strip()
+        ),
+    }
+
+
 def mount_ltfs_inspector(
     sg_device="/dev/sg0",
     mountpoint="/mnt/tapebox/ltfs-inspect",

@@ -97,6 +97,15 @@ Tape Inspector - TapeBox
 
     <div style="margin-top: 18px;">
         <button
+            id="load-tape-button"
+            class="action-button"
+            type="button"
+            hidden
+        >
+            Load Tape
+        </button>
+
+        <button
             id="inspect-tape-button"
             class="action-button"
             type="button"
@@ -423,6 +432,10 @@ Tape Inspector - TapeBox
             "inspector-activity-text"
         );
 
+    const loadButton = document.getElementById(
+        "load-tape-button"
+    );
+
     const inspectButton = document.getElementById(
         "inspect-tape-button"
     );
@@ -634,6 +647,12 @@ Tape Inspector - TapeBox
 
 
     function updateButtons() {
+        loadButton.disabled = (
+            driveReady
+            || tapeMounted
+            || operationRunning
+        );
+
         inspectButton.disabled = (
             !driveReady
             || tapeMounted
@@ -1269,6 +1288,113 @@ Tape Inspector - TapeBox
     }
 
 
+    async function loadTape() {
+        operationRunning = true;
+        clearMessage();
+        updateButtons();
+
+        statusPanel.classList.remove(
+            "offline"
+        );
+
+        statusPanel.classList.add(
+            "online"
+        );
+
+        statusState.textContent =
+            "LOADING TAPE";
+
+        statusDetail.textContent =
+            "Pulling cartridge into the drive...";
+
+        showMessage(
+            "Loading cartridge..."
+        );
+
+        try {
+            const response = await fetch(
+                "/api/inspector/load",
+                {
+                    method: "POST",
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Tape load failed."
+                );
+            }
+
+            driveReady = true;
+            tapeMounted = false;
+
+            statusPanel.classList.add(
+                "online"
+            );
+
+            statusPanel.classList.remove(
+                "offline"
+            );
+
+            statusState.textContent =
+                "TAPE ONLINE";
+
+            statusDetail.textContent =
+                (data.drive || "Tape Drive")
+                + " · Ready";
+
+            loadedTapeHeading.textContent =
+                "Tape Ready";
+
+            loadedTapeDescription.textContent =
+                "A cartridge is loaded and ready to inspect.";
+
+            showMessage(
+                data.message
+                || "Cartridge loaded and drive is online."
+            );
+
+        } catch (error) {
+            driveReady = false;
+
+            statusPanel.classList.remove(
+                "online"
+            );
+
+            statusPanel.classList.add(
+                "offline"
+            );
+
+            statusState.textContent =
+                "LOAD FAILED";
+
+            statusDetail.textContent =
+                error.message;
+
+            showMessage(
+                error.message,
+                true
+            );
+
+        } finally {
+            operationRunning = false;
+            updateButtons();
+
+            window.setTimeout(
+                pollTapeStatus,
+                500
+            );
+        }
+    }
+
+
     async function inspectTape() {
         operationRunning = true;
         clearMessage();
@@ -1603,6 +1729,12 @@ Tape Inspector - TapeBox
             statusPanel.classList.toggle(
                 "offline",
                 !driveReady
+            );
+
+            loadButton.hidden = (
+                !data.detected
+                || driveReady
+                || tapeMounted
             );
 
             if (tapeMounted) {
@@ -1940,6 +2072,11 @@ Tape Inspector - TapeBox
         }
     );
 
+
+    loadButton.addEventListener(
+        "click",
+        loadTape
+    );
 
     inspectButton.addEventListener(
         "click",
