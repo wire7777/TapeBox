@@ -19,6 +19,7 @@ from pathlib import Path
 from tapebox import __version__
 from tapebox.database import (
     backup_catalog,
+    restore_catalog,
     validate_catalog_database,
 )
 
@@ -1393,4 +1394,297 @@ def restore_source_checkpoint(
         "success": True,
         "restored_commit": restored_commit,
         "restored_branch": restored_branch,
+    }
+
+
+
+def rollback_update_checkpoint(
+    record=None,
+):
+    """
+    Restore both TapeBox source code and its pre-update catalog database.
+
+    The TapeBox service/process must already be stopped by the external
+    updater before this function is used.
+
+    Source and database are treated as one rollback checkpoint:
+        1. validate the saved catalog backup
+        2. restore the exact previous source commit
+        3. restore the pre-update catalog database
+        4. validate the restored catalog
+        5. persist rollback completion state
+    """
+
+    if record is None:
+        record = read_state()
+
+    if not isinstance(record, dict):
+        raise UpdateError(
+            "No valid TapeBox rollback checkpoint is available."
+        )
+
+    previous_commit = str(
+        record.get(
+            "previous_commit"
+        )
+        or ""
+    ).strip()
+
+    previous_branch = (
+        str(
+            record.get(
+                "previous_branch"
+            )
+        ).strip()
+        if record.get(
+            "previous_branch"
+        )
+        else None
+    )
+
+    catalog_backup_value = (
+        record.get(
+            "catalog_backup"
+        )
+    )
+
+    if not previous_commit:
+        raise UpdateError(
+            "Rollback checkpoint is missing the previous commit."
+        )
+
+    if not catalog_backup_value:
+        raise UpdateError(
+            "Rollback checkpoint is missing the catalog backup."
+        )
+
+    catalog_backup = Path(
+        catalog_backup_value
+    )
+
+    if not catalog_backup.is_file():
+        raise UpdateError(
+            "Rollback catalog backup does not exist: "
+            f"{catalog_backup}"
+        )
+
+    #
+    # Never change source code until we know the saved database backup
+    # still exists and is valid.
+    #
+    backup_validation = (
+        validate_catalog_database(
+            catalog_backup
+        )
+    )
+
+    if not backup_validation.get(
+        "success"
+    ):
+        raise UpdateError(
+            "Rollback catalog backup failed validation: "
+            + backup_validation.get(
+                "error",
+                "unknown validation error",
+            )
+        )
+
+    rollback_started_at = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    rollback_record = dict(
+        record
+    )
+
+    rollback_record[
+        "status"
+    ] = "rollback_in_progress"
+
+    rollback_record[
+        "rollback_started_at"
+    ] = rollback_started_at
+
+    write_state(
+        rollback_record
+    )
+
+    try:
+        source_result = (
+            restore_source_checkpoint(
+                previous_commit=previous_commit,
+                previous_branch=previous_branch,
+            )
+        )
+
+    except Exception as exc:
+        rollback_record[
+            "status"
+        ] = "rollback_failed"
+
+        rollback_record[
+            "rollback_failure_stage"
+        ] = "source"
+
+        rollback_record[
+            "rollback_error"
+        ] = str(exc)
+
+        write_state(
+            rollback_record
+        )
+
+        raise UpdateError(
+            "TapeBox source rollback failed: "
+            f"{exc}"
+        ) from exc
+
+    try:
+        database_result = restore_catalog(
+            catalog_backup
+        )
+
+        if not database_result.get(
+            "success"
+        ):
+            raise UpdateError(
+                database_result.get(
+                    "error",
+                    "Catalog restore failed.",
+                )
+            )
+
+    except Exception as exc:
+        rollback_record[
+            "status"
+        ] = "rollback_failed"
+
+        rollback_record[
+            "rollback_failure_stage"
+        ] = "database"
+
+        rollback_record[
+            "rollback_error"
+        ] = str(exc)
+
+        rollback_record[
+            "source_restored"
+        ] = True
+
+        write_state(
+            rollback_record
+        )
+
+        raise UpdateError(
+            "TapeBox source was restored, but catalog rollback failed: "
+            f"{exc}"
+        ) from exc
+
+    restored_validation = (
+        validate_catalog_database(
+            Path(
+                database_result.get(
+                    "database_path",
+                    "/var/lib/tapebox/catalog.db",
+                )
+            )
+        )
+        if database_result.get(
+            "database_path"
+        )
+        else None
+    )
+
+    #
+    # Some versions of restore_catalog() do not return database_path.
+    # In that case its own successful post-restore validation is the
+    # authority and we retain that result below.
+    #
+    if (
+        restored_validation is not None
+        and not restored_validation.get(
+            "success"
+        )
+    ):
+        rollback_record[
+            "status"
+        ] = "rollback_failed"
+
+        rollback_record[
+            "rollback_failure_stage"
+        ] = "post_restore_validation"
+
+        rollback_record[
+            "rollback_error"
+        ] = restored_validation.get(
+            "error",
+            "Restored catalog failed validation.",
+        )
+
+        write_state(
+            rollback_record
+        )
+
+        raise UpdateError(
+            "Catalog was restored but failed post-restore validation."
+        )
+
+    rollback_record.update(
+        {
+            "status": "rolled_back",
+            "rollback_completed_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "rollback_failure_stage": None,
+            "rollback_error": None,
+            "source_restored": True,
+            "database_restored": True,
+            "restored_commit": source_result[
+                "restored_commit"
+            ],
+            "restored_branch": source_result[
+                "restored_branch"
+            ],
+        }
+    )
+
+    write_state(
+        rollback_record
+    )
+
+    rollback_dir_value = (
+        rollback_record.get(
+            "rollback_dir"
+        )
+    )
+
+    if rollback_dir_value:
+        rollback_dir = Path(
+            rollback_dir_value
+        )
+
+        if rollback_dir.is_dir():
+            (
+                rollback_dir
+                / "rollback.json"
+            ).write_text(
+                json.dumps(
+                    rollback_record,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+    return {
+        "success": True,
+        "status": "rolled_back",
+        "source": source_result,
+        "database": database_result,
+        "catalog_backup": str(
+            catalog_backup
+        ),
+        "previous_commit": previous_commit,
+        "previous_branch": previous_branch,
     }
