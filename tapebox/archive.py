@@ -2890,7 +2890,10 @@ def archive_folder_job(
     }
 
 
-def resume_archive_job(job_id):
+def resume_archive_job(
+    job_id,
+    progress_callback=None,
+):
     """
     Resume an existing folder archive job.
     """
@@ -2910,6 +2913,7 @@ def resume_archive_job(job_id):
     return archive_folder_job(
         job["source_path"],
         job_id=job_id,
+        progress_callback=progress_callback,
     )
 
 
