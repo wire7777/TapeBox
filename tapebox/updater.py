@@ -11,6 +11,8 @@ This module does not perform an update merely by being imported.
 import json
 import os
 import subprocess
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -528,4 +530,433 @@ def prepare_update_checkpoint(
         "target_version": target_version,
         "target_commit": target_commit,
         "status": "checkpoint_ready",
+    }
+
+
+
+def github_repository():
+    """
+    Resolve the GitHub owner/repository pair from remote.origin.url.
+
+    Supported examples:
+        https://github.com/wire7777/TapeBox.git
+        git@github.com:wire7777/TapeBox.git
+    """
+
+    origin = get_origin_url().strip()
+
+    https_prefix = "https://github.com/"
+
+    if origin.startswith(https_prefix):
+        repository = origin[
+            len(https_prefix):
+        ]
+
+    elif origin.startswith(
+        "git@github.com:"
+    ):
+        repository = origin[
+            len("git@github.com:"):
+        ]
+
+    else:
+        raise UpdateError(
+            "TapeBox origin is not a supported GitHub repository: "
+            f"{origin}"
+        )
+
+    if repository.endswith(".git"):
+        repository = repository[:-4]
+
+    repository = repository.strip("/")
+
+    pieces = repository.split("/")
+
+    if len(pieces) != 2:
+        raise UpdateError(
+            "Could not determine GitHub owner and repository "
+            f"from origin: {origin}"
+        )
+
+    owner, repo = pieces
+
+    if not owner or not repo:
+        raise UpdateError(
+            f"Invalid GitHub repository origin: {origin}"
+        )
+
+    return {
+        "owner": owner,
+        "repository": repo,
+        "full_name": f"{owner}/{repo}",
+    }
+
+
+def _parse_version(value):
+    """
+    Parse a simple semantic version such as:
+        0.1.0
+        v0.1.0
+
+    Returns a numeric tuple for comparison, or None when the value is not
+    a supported stable semantic version.
+    """
+
+    value = str(
+        value or ""
+    ).strip()
+
+    if value.lower().startswith("v"):
+        value = value[1:]
+
+    #
+    # Stable releases only for the first updater version.
+    # Pre-release handling can be added later as an explicit option.
+    #
+    if "-" in value or "+" in value:
+        return None
+
+    pieces = value.split(".")
+
+    if not pieces:
+        return None
+
+    if len(pieces) > 3:
+        return None
+
+    numbers = []
+
+    for piece in pieces:
+        if not piece.isdigit():
+            return None
+
+        numbers.append(
+            int(piece)
+        )
+
+    while len(numbers) < 3:
+        numbers.append(0)
+
+    return tuple(numbers)
+
+
+def _github_json(url):
+    """
+    Fetch JSON from GitHub using only the Python standard library.
+
+    This is read-only and does not authenticate or modify the repository.
+    """
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": (
+                "application/vnd.github+json"
+            ),
+            "User-Agent": (
+                f"TapeBox/{__version__}"
+            ),
+            "X-GitHub-Api-Version": (
+                "2022-11-28"
+            ),
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=15,
+        ) as response:
+            payload = response.read()
+
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+
+        raise UpdateError(
+            "GitHub update check failed with "
+            f"HTTP {exc.code}."
+        ) from exc
+
+    except urllib.error.URLError as exc:
+        raise UpdateError(
+            "Could not contact GitHub while checking "
+            f"for TapeBox updates: {exc.reason}"
+        ) from exc
+
+    except TimeoutError as exc:
+        raise UpdateError(
+            "GitHub update check timed out."
+        ) from exc
+
+    try:
+        return json.loads(
+            payload.decode("utf-8")
+        )
+
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise UpdateError(
+            "GitHub returned an invalid update response."
+        ) from exc
+
+
+def _latest_github_tag(
+    repository,
+):
+    """
+    Return the newest stable semantic-version tag from GitHub.
+
+    This acts as a fallback when a repository has tags but has not yet
+    published GitHub Releases.
+    """
+
+    url = (
+        "https://api.github.com/repos/"
+        f"{repository}/tags"
+        "?per_page=100"
+    )
+
+    payload = _github_json(url)
+
+    if not payload:
+        return None
+
+    candidates = []
+
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+
+        tag_name = str(
+            item.get("name") or ""
+        ).strip()
+
+        parsed = _parse_version(
+            tag_name
+        )
+
+        commit = item.get(
+            "commit"
+        ) or {}
+
+        commit_sha = (
+            commit.get("sha")
+            if isinstance(commit, dict)
+            else None
+        )
+
+        if parsed is None:
+            continue
+
+        candidates.append(
+            (
+                parsed,
+                tag_name,
+                commit_sha,
+            )
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    parsed, tag_name, commit_sha = (
+        candidates[0]
+    )
+
+    return {
+        "source": "tag",
+        "tag_name": tag_name,
+        "version": ".".join(
+            str(part)
+            for part in parsed
+        ),
+        "commit": commit_sha,
+        "name": tag_name,
+        "body": "",
+        "html_url": (
+            "https://github.com/"
+            f"{repository}/releases/tag/"
+            f"{tag_name}"
+        ),
+        "published_at": None,
+        "prerelease": False,
+        "draft": False,
+    }
+
+
+def latest_github_release():
+    """
+    Discover the newest stable TapeBox release.
+
+    Prefer an actual GitHub Release. If no Release exists yet, fall back
+    to the newest semantic-version Git tag.
+
+    This function is completely read-only.
+    """
+
+    repo = github_repository()
+
+    repository = repo[
+        "full_name"
+    ]
+
+    latest_release_url = (
+        "https://api.github.com/repos/"
+        f"{repository}/releases/latest"
+    )
+
+    payload = _github_json(
+        latest_release_url
+    )
+
+    release = None
+
+    if isinstance(payload, dict):
+        tag_name = str(
+            payload.get("tag_name")
+            or ""
+        ).strip()
+
+        parsed = _parse_version(
+            tag_name
+        )
+
+        if (
+            parsed is not None
+            and not payload.get(
+                "draft",
+                False,
+            )
+            and not payload.get(
+                "prerelease",
+                False,
+            )
+        ):
+            release = {
+                "source": "release",
+                "tag_name": tag_name,
+                "version": ".".join(
+                    str(part)
+                    for part in parsed
+                ),
+                "commit": (
+                    payload.get(
+                        "target_commitish"
+                    )
+                ),
+                "name": (
+                    payload.get("name")
+                    or tag_name
+                ),
+                "body": (
+                    payload.get("body")
+                    or ""
+                ),
+                "html_url": (
+                    payload.get(
+                        "html_url"
+                    )
+                ),
+                "published_at": (
+                    payload.get(
+                        "published_at"
+                    )
+                ),
+                "prerelease": False,
+                "draft": False,
+            }
+
+    if release is None:
+        release = _latest_github_tag(
+            repository
+        )
+
+    return {
+        "success": True,
+        "repository": repository,
+        "release": release,
+    }
+
+
+def check_for_updates():
+    """
+    Compare the installed TapeBox version with the latest stable release.
+
+    No source code or database state is changed.
+    """
+
+    discovery = latest_github_release()
+
+    release = discovery.get(
+        "release"
+    )
+
+    current_parsed = _parse_version(
+        __version__
+    )
+
+    if current_parsed is None:
+        raise UpdateError(
+            "Installed TapeBox version is not a supported "
+            f"semantic version: {__version__}"
+        )
+
+    if release is None:
+        return {
+            "success": True,
+            "repository": discovery[
+                "repository"
+            ],
+            "current_version": __version__,
+            "current_commit": (
+                get_current_commit()
+            ),
+            "update_available": False,
+            "latest_version": None,
+            "latest_tag": None,
+            "release": None,
+            "message": (
+                "No stable TapeBox release was found."
+            ),
+        }
+
+    latest_parsed = _parse_version(
+        release["version"]
+    )
+
+    update_available = (
+        latest_parsed > current_parsed
+    )
+
+    return {
+        "success": True,
+        "repository": discovery[
+            "repository"
+        ],
+        "current_version": __version__,
+        "current_commit": get_current_commit(),
+        "update_available": update_available,
+        "latest_version": release[
+            "version"
+        ],
+        "latest_tag": release[
+            "tag_name"
+        ],
+        "release": release,
+        "message": (
+            f"TapeBox {release['version']} is available."
+            if update_available
+            else (
+                "TapeBox is up to date with the latest "
+                "stable release."
+            )
+        ),
     }
