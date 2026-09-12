@@ -335,6 +335,20 @@ print("  Gunicorn:", gunicorn.__version__)
 PY
 
 echo
+echo "Installing TapeBox updater command..."
+
+cat > /usr/local/bin/tapebox-updater <<EOF_UPDATER
+#!/bin/sh
+cd "$APP_DIR" || exit 1
+exec "$APP_DIR/venv/bin/python" -m tapebox.updater_cli "\$@"
+EOF_UPDATER
+
+chown root:root /usr/local/bin/tapebox-updater
+chmod 0755 /usr/local/bin/tapebox-updater
+
+echo "  Installed: /usr/local/bin/tapebox-updater"
+
+echo
 echo "[7/10] Creating systemd service..."
 
 cat > "$SERVICE_FILE" <<EOF_SERVICE
@@ -443,6 +457,11 @@ systemctl is-enabled tapebox
 systemctl is-active tapebox
 
 echo
+echo "TapeBox updater:"
+/usr/local/bin/tapebox-updater --help >/dev/null
+echo "  /usr/local/bin/tapebox-updater -> OK"
+
+echo
 echo "HTTP:"
 HTTP_STATUS="$(
     curl \
@@ -477,6 +496,13 @@ echo
 echo "  sudo systemctl status tapebox"
 echo "  sudo systemctl restart tapebox"
 echo "  sudo journalctl -u tapebox -f"
+echo
+echo "Updater commands:"
+echo
+echo "  tapebox-updater status"
+echo "  tapebox-updater check"
+echo "  tapebox-updater update vX.Y.Z"
+echo "  tapebox-updater rollback"
 echo
 echo "IMPORTANT:"
 echo "Log out and back in before manually accessing tape"
