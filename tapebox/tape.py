@@ -844,9 +844,54 @@ def eject_tape(
             "error": error_text,
         }
 
+    #
+    # mt offline may return before the drive has completely
+    # finished its mechanical unload/eject cycle.
+    #
+    # Do not report the eject as complete until the tape driver
+    # reports DR_OPEN. This also prevents a following load command
+    # from racing the previous unload operation.
+    #
+    settle_deadline = time.monotonic() + 60.0
+    last_status_text = ""
+
+    while time.monotonic() < settle_deadline:
+        status_result = run_command(
+            [
+                "mt",
+                "-f",
+                device,
+                "status",
+            ],
+            timeout=10,
+        )
+
+        last_status_text = (
+            status_result.get("stdout", "")
+            + "\n"
+            + status_result.get("stderr", "")
+        )
+
+        if (
+            status_result.get("returncode") == 0
+            and "DR_OPEN" in last_status_text
+        ):
+            return {
+                "success": True,
+                "device": device,
+            }
+
+        time.sleep(1.0)
+
     return {
-        "success": True,
+        "success": False,
         "device": device,
+        "error": (
+            "Tape unload command succeeded, but the drive "
+            "did not report DR_OPEN within 60 seconds. "
+            "Last status: "
+            + last_status_text.strip()
+        ),
     }
 
 
