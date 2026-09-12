@@ -15,6 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tapebox import __version__
+from tapebox.database import (
+    backup_catalog,
+    validate_catalog_database,
+)
 
 
 APP_DIR = Path("/opt/tapebox")
@@ -350,3 +354,178 @@ def create_rollback_record(
     write_state(record)
 
     return record
+
+
+
+def prepare_update_checkpoint(
+    *,
+    target_version=None,
+    target_commit=None,
+):
+    """
+    Create and validate the database backup required before an update.
+
+    This prepares a durable rollback checkpoint but does not modify Git,
+    install software, restart TapeBox, or restore anything.
+    """
+
+    if not APP_DIR.is_dir():
+        raise UpdateError(
+            f"TapeBox application directory does not exist: {APP_DIR}"
+        )
+
+    if not (APP_DIR / ".git").is_dir():
+        raise UpdateError(
+            "TapeBox application directory is not a Git repository."
+        )
+
+    #
+    # Check this before creating a database backup. We do not want an
+    # updater run to proceed when local development work could be lost.
+    #
+    status = working_tree_status()
+
+    if status.strip():
+        raise UpdateError(
+            "TapeBox has uncommitted source changes. "
+            "Commit, stash, or remove them before preparing an update."
+        )
+
+    previous_commit = get_current_commit()
+    previous_branch = get_current_branch()
+
+    #
+    # Create the SQLite-consistent catalog backup using TapeBox's normal
+    # database backup engine.
+    #
+    backup_result = backup_catalog()
+
+    if not backup_result.get("success"):
+        raise UpdateError(
+            backup_result.get(
+                "error",
+                "Catalog backup failed.",
+            )
+        )
+
+    backup_path = Path(
+        backup_result["path"]
+    )
+
+    if not backup_path.is_file():
+        raise UpdateError(
+            "Catalog backup reported success but the backup file "
+            f"does not exist: {backup_path}"
+        )
+
+    #
+    # Never accept an unvalidated database as an update rollback point.
+    #
+    validation = validate_catalog_database(
+        backup_path
+    )
+
+    if not validation.get("success"):
+        raise UpdateError(
+            "Catalog backup validation failed: "
+            + validation.get(
+                "error",
+                "unknown validation error",
+            )
+        )
+
+    timestamp = datetime.now(
+        timezone.utc
+    ).strftime("%Y%m%d-%H%M%S-%f")
+
+    rollback_id = (
+        f"{timestamp}-{previous_commit[:12]}"
+    )
+
+    rollback_path = (
+        ROLLBACK_DIR / rollback_id
+    )
+
+    rollback_path.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
+
+    record = create_rollback_record(
+        catalog_backup=backup_path,
+        target_version=target_version,
+        target_commit=target_commit,
+    )
+
+    record.update(
+        {
+            "rollback_id": rollback_id,
+            "rollback_dir": str(
+                rollback_path
+            ),
+            "catalog_backup_size_bytes": (
+                backup_path.stat().st_size
+            ),
+            "catalog_validation": {
+                "success": True,
+                "tapes": validation.get(
+                    "tapes"
+                ),
+                "files": validation.get(
+                    "files"
+                ),
+            },
+            "previous_commit": previous_commit,
+            "previous_branch": previous_branch,
+            "status": "checkpoint_ready",
+        }
+    )
+
+    #
+    # Save the complete rollback record both globally and inside the
+    # individual rollback directory. The latter remains useful even if a
+    # later update state file is replaced.
+    #
+    write_state(record)
+
+    rollback_record_file = (
+        rollback_path / "rollback.json"
+    )
+
+    rollback_record_file.write_text(
+        json.dumps(
+            record,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    return {
+        "success": True,
+        "rollback_id": rollback_id,
+        "rollback_dir": str(
+            rollback_path
+        ),
+        "previous_version": record[
+            "previous_version"
+        ],
+        "previous_commit": previous_commit,
+        "previous_branch": previous_branch,
+        "runtime_mode": record[
+            "runtime_mode"
+        ],
+        "catalog_backup": str(
+            backup_path
+        ),
+        "catalog_backup_size_bytes": (
+            backup_path.stat().st_size
+        ),
+        "catalog_validation": record[
+            "catalog_validation"
+        ],
+        "target_version": target_version,
+        "target_commit": target_commit,
+        "status": "checkpoint_ready",
+    }
