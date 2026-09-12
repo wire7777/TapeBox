@@ -1738,6 +1738,272 @@ def rollback_update_checkpoint(
 
 
 
+def stop_runtime():
+    """
+    Stop TapeBox when managed by systemd.
+
+    Development installations are intentionally left
+    alone because the developer owns the Flask process.
+    """
+
+    runtime_mode = detect_runtime_mode()
+
+    if runtime_mode == "development":
+        return {
+            "success": True,
+            "runtime_mode": "development",
+            "stop_performed": False,
+            "manual_stop_required": True,
+        }
+
+    if runtime_mode != "systemd":
+        raise UpdateError(
+            f"Unsupported TapeBox runtime mode: {runtime_mode}"
+        )
+
+    _run(
+        [
+            "systemctl",
+            "stop",
+            SERVICE_NAME,
+        ],
+        timeout=120,
+    )
+
+    if systemd_service_active():
+        raise UpdateError(
+            "TapeBox systemd service is still active "
+            "after stop."
+        )
+
+    return {
+        "success": True,
+        "runtime_mode": "systemd",
+        "stop_performed": True,
+        "manual_stop_required": False,
+    }
+
+
+def start_runtime():
+    """
+    Start TapeBox when managed by systemd.
+
+    Development installations are intentionally not
+    started because the developer owns Flask manually.
+    """
+
+    runtime_mode = detect_runtime_mode()
+
+    if runtime_mode == "development":
+        return {
+            "success": True,
+            "runtime_mode": "development",
+            "start_performed": False,
+            "manual_start_required": True,
+        }
+
+    if runtime_mode != "systemd":
+        raise UpdateError(
+            f"Unsupported TapeBox runtime mode: {runtime_mode}"
+        )
+
+    _run(
+        [
+            "systemctl",
+            "start",
+            SERVICE_NAME,
+        ],
+        timeout=120,
+    )
+
+    if not systemd_service_active():
+        raise UpdateError(
+            "TapeBox systemd service did not become active "
+            "after start."
+        )
+
+    return {
+        "success": True,
+        "runtime_mode": "systemd",
+        "start_performed": True,
+        "manual_start_required": False,
+    }
+
+
+def perform_rollback(
+    *,
+    record=None,
+    health_url="http://127.0.0.1:8080/",
+):
+    """
+    Perform a complete TapeBox rollback from the external
+    updater process.
+
+    Development mode:
+        - restore source + catalog
+        - leave manually-controlled Flask alone
+        - require manual restart afterward
+
+    systemd mode:
+        - stop TapeBox
+        - restore source + catalog
+        - start TapeBox
+        - verify HTTP health
+    """
+
+    if record is None:
+        record = read_state()
+
+    if not isinstance(record, dict):
+        raise UpdateError(
+            "No TapeBox rollback checkpoint is available."
+        )
+
+    runtime_mode = (
+        record.get("runtime_mode")
+        or detect_runtime_mode()
+    )
+
+    if runtime_mode not in {
+        "development",
+        "systemd",
+    }:
+        raise UpdateError(
+            "Unsupported rollback runtime mode: "
+            f"{runtime_mode}"
+        )
+
+    #
+    # Development Flask is manually controlled.
+    # Refuse before rollback begins and before any updater
+    # failure state is written.
+    #
+    if runtime_mode == "development":
+        running_probe = probe_http_health(
+            health_url,
+            timeout=2,
+        )
+
+        if running_probe.get("healthy"):
+            raise UpdateError(
+                "Development TapeBox is still running. "
+                "Stop the Flask process manually before "
+                "running rollback."
+            )
+
+    stop_result = None
+    rollback_result = None
+    start_result = None
+    health_result = None
+
+    try:
+        if runtime_mode == "systemd":
+            stop_result = stop_runtime()
+
+        rollback_result = rollback_update_checkpoint(
+            record
+        )
+
+        if runtime_mode == "development":
+            state = read_state() or dict(record)
+
+            state.update(
+                {
+                    "status": "rolled_back",
+                    "runtime_mode": "development",
+                    "manual_restart_required": True,
+                    "rollback_runtime_validated": False,
+                }
+            )
+
+            write_state(
+                state
+            )
+
+            return {
+                "success": True,
+                "status": "rolled_back",
+                "runtime_mode": "development",
+                "rollback": rollback_result,
+                "stop": stop_result,
+                "start": None,
+                "health": None,
+                "manual_restart_required": True,
+            }
+
+        start_result = start_runtime()
+
+        health_result = wait_for_http_health(
+            health_url
+        )
+
+        state = read_state() or dict(record)
+
+        state.update(
+            {
+                "status": "rolled_back",
+                "runtime_mode": "systemd",
+                "manual_restart_required": False,
+                "rollback_runtime_validated": True,
+                "rollback_health_checked": True,
+            }
+        )
+
+        write_state(
+            state
+        )
+
+        return {
+            "success": True,
+            "status": "rolled_back",
+            "runtime_mode": "systemd",
+            "rollback": rollback_result,
+            "stop": stop_result,
+            "start": start_result,
+            "health": health_result,
+            "manual_restart_required": False,
+        }
+
+    except Exception as exc:
+        failure_state = (
+            read_state()
+            or dict(record)
+        )
+
+        failure_state.update(
+            {
+                "status": "rollback_failed",
+                "runtime_mode": runtime_mode,
+                "rollback_orchestrator_error": str(exc),
+            }
+        )
+
+        write_state(
+            failure_state
+        )
+
+        #
+        # If production rollback restored source/database
+        # but failed while bringing the old runtime back,
+        # make one best-effort attempt to start the old
+        # TapeBox service before reporting failure.
+        #
+        if (
+            runtime_mode == "systemd"
+            and rollback_result is not None
+        ):
+            try:
+                if not systemd_service_active():
+                    start_runtime()
+            except Exception:
+                pass
+
+        raise UpdateError(
+            "TapeBox rollback failed: "
+            f"{exc}"
+        ) from exc
+
+
 def restart_runtime():
     """
     Restart TapeBox when managed by systemd.

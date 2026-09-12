@@ -16,7 +16,7 @@ from tapebox.updater import (
     complete_manual_update,
     perform_update,
     read_state,
-    rollback_update_checkpoint,
+    perform_rollback,
     update_environment,
 )
 
@@ -69,20 +69,10 @@ def command_rollback(args):
             "No TapeBox rollback checkpoint is available."
         )
 
-    result = rollback_update_checkpoint(
-        state
+    return perform_rollback(
+        record=state,
+        health_url=args.health_url,
     )
-
-    return {
-        "success": True,
-        "status": "rolled_back",
-        "rollback": result,
-        "manual_restart_required": (
-            state.get("runtime_mode")
-            == "development"
-        ),
-    }
-
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -157,8 +147,21 @@ def build_parser():
 
     rollback_parser = subparsers.add_parser(
         "rollback",
-        help="Restore the saved source and catalog checkpoint.",
+        help=(
+            "Restore the saved source and catalog checkpoint "
+            "and validate the restored runtime."
+        ),
     )
+
+    rollback_parser.add_argument(
+        "--health-url",
+        default="http://127.0.0.1:8080/",
+        help=(
+            "TapeBox HTTP URL used for post-rollback "
+            "health validation."
+        ),
+    )
+
     rollback_parser.set_defaults(
         handler=command_rollback
     )
