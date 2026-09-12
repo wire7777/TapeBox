@@ -21,6 +21,7 @@ from tapebox.database import (
     list_tapes,
     list_files,
     list_archive_jobs,
+    get_latest_resumable_archive_job,
     remove_archive_job_history,
     get_archive_job,
     update_archive_job,
@@ -5357,8 +5358,8 @@ def staging_archive_operation_api():
     Return the current staging-selection archive operation, if any.
 
     This allows the Staging page to reconnect after a browser
-    refresh or navigation instead of losing the prepared operation
-    ID that had only existed in the DOM.
+    refresh, navigation, or TapeBox restart without automatically
+    starting tape hardware activity.
     """
 
     with OPERATION_STATE_LOCK:
@@ -5380,14 +5381,6 @@ def staging_archive_operation_api():
 
             candidates.append(operation)
 
-        if not candidates:
-            return jsonify(
-                {
-                    "success": True,
-                    "operation": None,
-                }
-            )
-
         #
         # There should normally only be one physical-tape
         # operation. Prefer the active operation if present.
@@ -5406,8 +5399,109 @@ def staging_archive_operation_api():
             ):
                 operation = active
 
-        if operation is None:
+        if (
+            operation is None
+            and candidates
+        ):
             operation = candidates[-1]
+
+        if operation is not None:
+            snapshot = _operation_snapshot(
+                operation
+            )
+
+            return jsonify(
+                {
+                    "success": True,
+                    "operation": snapshot,
+                }
+            )
+
+    #
+    # No matching operation exists in memory. Look for a durable
+    # archive job left unfinished by an earlier TapeBox process.
+    #
+    job = get_latest_resumable_archive_job()
+
+    if job is None:
+        return jsonify(
+            {
+                "success": True,
+                "operation": None,
+            }
+        )
+
+    operation_id = (
+        f"archive-job-{job['id']}"
+    )
+
+    original_status = str(
+        job["status"] or ""
+    )
+
+    if original_status == "running":
+        message = (
+            "Archive was interrupted. "
+            "Continue archive when ready."
+        )
+
+        messages = [
+            "TapeBox restarted during the archive.",
+            message,
+        ]
+
+    else:
+        message = (
+            "Insert the next cartridge "
+            "to continue the archive."
+        )
+
+        messages = [
+            message,
+        ]
+
+    operation = {
+        "id": operation_id,
+        "type": "archive_staging_selection",
+        "job_id": int(job["id"]),
+        "file_ids": [],
+        "destination": str(
+            job["source_path"]
+        ),
+        "status": "waiting_for_tape",
+        "message": message,
+        "messages": messages,
+        "transfer": None,
+        "result": None,
+        "selection": {
+            "items": None,
+            "files": int(
+                job["total_files"] or 0
+            ),
+            "bytes": int(
+                job["total_bytes"] or 0
+            ),
+            "snapshot": str(
+                job["source_path"]
+            ),
+        },
+    }
+
+    with OPERATION_STATE_LOCK:
+        #
+        # Re-check memory in case another request reconstructed or
+        # started an operation while the database was being read.
+        #
+        existing = OPERATIONS.get(
+            operation_id
+        )
+
+        if existing is None:
+            OPERATIONS[
+                operation_id
+            ] = operation
+        else:
+            operation = existing
 
         snapshot = _operation_snapshot(
             operation

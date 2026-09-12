@@ -1507,6 +1507,42 @@ def list_archive_jobs():
         ).fetchall()
 
 
+def get_latest_resumable_archive_job():
+    """
+    Return the newest archive job that can safely be continued.
+
+    A job left in 'running' state after process restart is treated
+    as interrupted. 'waiting_for_tape' is already explicitly
+    resumable.
+
+    Error jobs are deliberately excluded because some failures may
+    require catalog/tape reconciliation before continuing.
+    """
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                id,
+                source_path,
+                status,
+                total_files,
+                total_bytes,
+                bytes_written,
+                started_at,
+                completed_at,
+                error
+            FROM archive_jobs
+            WHERE status IN (
+                'running',
+                'waiting_for_tape'
+            )
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+
 def import_tape_manifest_records(
     tape_metadata,
     manifest,
