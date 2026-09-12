@@ -35,7 +35,10 @@ from tapebox.database import (
     get_files_by_tape,
     search_files,
     get_file_by_id,
+    get_files_by_ids,
     get_file_parts,
+    get_file_parts_for_files,
+    get_file_parts_by_tape,
     get_setting,
     get_settings,
     set_setting,
@@ -2173,57 +2176,29 @@ def tape_detail_page(tape_id):
         )
 
     #
-    # Also find physical parts belonging to spanned logical files.
+    # Physical parts of spanned logical files that live on this tape.
+    #
+    # Fetch these in one database query instead of scanning every
+    # catalog file and issuing get_file_parts() once per spanned file.
     #
     spanned_parts = []
 
-    for file_row in list_files():
-        if not file_row["is_spanned"]:
-            continue
-
-        parts = get_file_parts(
-            file_row["id"]
+    for part in get_file_parts_by_tape(
+        tape_id
+    ):
+        spanned_parts.append(
+            {
+                "file_id": part["file_id"],
+                "filename": part["filename"],
+                "relative_path": part["relative_path"],
+                "logical_size": part[
+                    "file_size_bytes"
+                ],
+                "part_number": part["part_number"],
+                "part_size": part["size_bytes"],
+                "tape_path": part["tape_path"],
+            }
         )
-
-        for part in parts:
-            if part["tape_id"] != tape_id:
-                continue
-
-            part["original_created_display"] = (
-                format_timestamp(
-                    file_row[
-                        "original_created_at"
-                    ]
-                )
-            )
-
-            part["original_modified_display"] = (
-                format_timestamp(
-                    file_row[
-                        "original_modified_at"
-                    ]
-                )
-            )
-
-            part["archived_display"] = (
-                format_timestamp(
-                    file_row[
-                        "archived_at"
-                    ]
-                )
-            )
-
-            spanned_parts.append(
-                {
-                    "file_id": file_row["id"],
-                    "filename": file_row["filename"],
-                    "relative_path": file_row["relative_path"],
-                    "logical_size": file_row["size_bytes"],
-                    "part_number": part["part_number"],
-                    "part_size": part["size_bytes"],
-                    "tape_path": part["tape_path"],
-                }
-            )
 
     return render_template(
         "tape_detail.html",
@@ -2313,17 +2288,12 @@ def files_restore_plan_api():
             }
         ), 400
 
-    planned_files = []
-    required_tapes = []
-    seen_tape_ids = set()
-    total_bytes = 0
+    files_by_id = get_files_by_ids(
+        file_ids
+    )
 
     for file_id in file_ids:
-        row = get_file_by_id(
-            file_id
-        )
-
-        if row is None:
+        if file_id not in files_by_id:
             return jsonify(
                 {
                     "success": False,
@@ -2334,6 +2304,22 @@ def files_restore_plan_api():
                 }
             ), 404
 
+    parts_by_file_id = get_file_parts_for_files(
+        [
+            file_id
+            for file_id in file_ids
+            if files_by_id[file_id]["is_spanned"]
+        ]
+    )
+
+    planned_files = []
+    required_tapes = []
+    seen_tape_ids = set()
+    total_bytes = 0
+
+    for file_id in file_ids:
+        row = files_by_id[file_id]
+
         total_bytes += int(
             row["size_bytes"] or 0
         )
@@ -2341,8 +2327,9 @@ def files_restore_plan_api():
         file_tapes = []
 
         if row["is_spanned"]:
-            parts = get_file_parts(
-                file_id
+            parts = parts_by_file_id.get(
+                file_id,
+                [],
             )
 
             if not parts:
@@ -2651,11 +2638,15 @@ def files_restore_start_api():
         ), 400
 
     #
-    # Validate that every requested catalog row exists before
-    # claiming the tape operation lock.
+    # Validate all requested catalog rows in bulk before claiming
+    # the tape operation lock.
     #
+    files_by_id = get_files_by_ids(
+        file_ids
+    )
+
     for file_id in file_ids:
-        if get_file_by_id(file_id) is None:
+        if file_id not in files_by_id:
             return jsonify(
                 {
                     "success": False,
@@ -2995,14 +2986,23 @@ def files_page():
     if query:
         files = search_files(query)
 
+        parts_by_file_id = get_file_parts_for_files(
+            [
+                file_row["id"]
+                for file_row in files
+                if file_row["is_spanned"]
+            ]
+        )
+
         rows = []
 
         for file_row in files:
             required_tapes = []
 
             if file_row["is_spanned"]:
-                parts = get_file_parts(
-                    file_row["id"]
+                parts = parts_by_file_id.get(
+                    file_row["id"],
+                    [],
                 )
 
                 for part in parts:
@@ -3067,6 +3067,14 @@ def files_page():
         requested_path,
     )
 
+    parts_by_file_id = get_file_parts_for_files(
+        [
+            file_row["id"]
+            for file_row in folder_view["files"]
+            if file_row["is_spanned"]
+        ]
+    )
+
     rows = []
 
     rows.extend(
@@ -3077,8 +3085,9 @@ def files_page():
         required_tapes = []
 
         if file_row["is_spanned"]:
-            parts = get_file_parts(
-                file_row["id"]
+            parts = parts_by_file_id.get(
+                file_row["id"],
+                [],
             )
 
             for part in parts:

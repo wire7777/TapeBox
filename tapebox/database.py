@@ -1134,6 +1134,80 @@ def list_files():
         ).fetchall()
 
 
+
+def get_files_by_ids(file_ids):
+    """
+    Return multiple archived files with tape information efficiently.
+
+    Results are keyed by file ID. IDs are queried in bounded batches
+    so large selections do not exceed SQLite's host-parameter limit.
+    """
+
+    normalized_ids = []
+
+    for value in file_ids:
+        file_id = int(value)
+
+        if file_id <= 0:
+            continue
+
+        if file_id not in normalized_ids:
+            normalized_ids.append(file_id)
+
+    if not normalized_ids:
+        return {}
+
+    result = {}
+    batch_size = 500
+
+    with connect() as db:
+        for offset in range(
+            0,
+            len(normalized_ids),
+            batch_size,
+        ):
+            batch = normalized_ids[
+                offset:offset + batch_size
+            ]
+
+            placeholders = ",".join(
+                "?"
+                for _ in batch
+            )
+
+            rows = db.execute(
+                f"""
+                SELECT
+                    files.id,
+                    files.archive_job_id,
+                    files.original_path,
+                    files.relative_path,
+                    files.filename,
+                    files.size_bytes,
+                    files.checksum_sha256,
+                    files.tape_id,
+                    files.tape_path,
+                    files.is_spanned,
+                    files.original_created_at,
+                    files.original_modified_at,
+                    files.archived_at,
+                    files.verified_at,
+                    tapes.label AS tape_label,
+                    tapes.ltfs_uuid
+                FROM files
+                LEFT JOIN tapes
+                    ON tapes.id = files.tape_id
+                WHERE files.id IN ({placeholders})
+                """,
+                batch,
+            ).fetchall()
+
+            for row in rows:
+                item = dict(row)
+                result[item["id"]] = item
+
+    return result
+
 def get_file_by_id(file_id):
     """
     Return one archived file with its tape information.
@@ -2589,6 +2663,85 @@ def get_file_parts(file_id):
         dict(row)
         for row in rows
     ]
+
+
+def get_file_parts_for_files(file_ids):
+    """
+    Return physical parts for multiple logical files efficiently.
+
+    Results are grouped by logical file ID. IDs are queried in
+    bounded batches so very large selections do not exceed SQLite's
+    host-parameter limit.
+    """
+
+    normalized_ids = []
+
+    for value in file_ids:
+        file_id = int(value)
+
+        if file_id <= 0:
+            continue
+
+        if file_id not in normalized_ids:
+            normalized_ids.append(file_id)
+
+    if not normalized_ids:
+        return {}
+
+    grouped = {
+        file_id: []
+        for file_id in normalized_ids
+    }
+
+    batch_size = 500
+
+    with connect() as db:
+        for offset in range(
+            0,
+            len(normalized_ids),
+            batch_size,
+        ):
+            batch = normalized_ids[
+                offset:offset + batch_size
+            ]
+
+            placeholders = ",".join(
+                "?"
+                for _ in batch
+            )
+
+            rows = db.execute(
+                f"""
+                SELECT
+                    file_parts.id,
+                    file_parts.file_id,
+                    file_parts.part_number,
+                    file_parts.tape_id,
+                    file_parts.tape_path,
+                    file_parts.size_bytes,
+                    file_parts.checksum_sha256,
+                    tapes.label AS tape_label,
+                    tapes.ltfs_uuid
+                FROM file_parts
+                LEFT JOIN tapes
+                    ON tapes.id = file_parts.tape_id
+                WHERE file_parts.file_id IN ({placeholders})
+                ORDER BY
+                    file_parts.file_id,
+                    file_parts.part_number
+                """,
+                batch,
+            ).fetchall()
+
+            for row in rows:
+                item = dict(row)
+
+                grouped.setdefault(
+                    item["file_id"],
+                    [],
+                ).append(item)
+
+    return grouped
 
 
 def get_next_file_part_number(file_id):
