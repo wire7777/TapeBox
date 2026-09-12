@@ -960,3 +960,237 @@ def check_for_updates():
             )
         ),
     }
+
+
+
+def fetch_github_refs():
+    """
+    Fetch tags and origin refs without checking anything out.
+
+    This updates Git metadata only. It does not modify the working tree.
+    """
+
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox has uncommitted source changes. "
+            "Refusing to fetch update refs."
+        )
+
+    result = _run(
+        [
+            "git",
+            "fetch",
+            "--tags",
+            "--prune",
+            "origin",
+        ],
+        cwd=APP_DIR,
+        timeout=120,
+    )
+
+    return {
+        "success": True,
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+    }
+
+
+def resolve_git_ref(ref_name):
+    """
+    Resolve a Git ref to an exact commit SHA.
+
+    For annotated tags, ^{} dereferences the tag object to its commit.
+    """
+
+    ref_name = str(
+        ref_name or ""
+    ).strip()
+
+    if not ref_name:
+        raise UpdateError(
+            "Git ref cannot be empty."
+        )
+
+    result = _run(
+        [
+            "git",
+            "rev-parse",
+            "--verify",
+            f"{ref_name}^{{commit}}",
+        ],
+        cwd=APP_DIR,
+        check=False,
+    )
+
+    if result["returncode"] != 0:
+        raise UpdateError(
+            f"Could not resolve Git ref: {ref_name}"
+        )
+
+    commit = result["stdout"].strip()
+
+    if len(commit) != 40:
+        raise UpdateError(
+            "Resolved Git commit is not a full SHA-1: "
+            f"{commit}"
+        )
+
+    return commit
+
+
+def git_commit_exists(commit):
+    """
+    Verify a commit object exists in the local repository.
+    """
+
+    commit = str(
+        commit or ""
+    ).strip()
+
+    if not commit:
+        return False
+
+    result = _run(
+        [
+            "git",
+            "cat-file",
+            "-e",
+            f"{commit}^{{commit}}",
+        ],
+        cwd=APP_DIR,
+        check=False,
+    )
+
+    return result["returncode"] == 0
+
+
+def version_from_tag(tag_name):
+    """
+    Convert a supported stable release tag to its normalized version.
+    """
+
+    parsed = _parse_version(
+        tag_name
+    )
+
+    if parsed is None:
+        raise UpdateError(
+            "Unsupported TapeBox release tag: "
+            f"{tag_name}"
+        )
+
+    return ".".join(
+        str(part)
+        for part in parsed
+    )
+
+
+def validate_release_candidate(
+    *,
+    tag_name,
+    expected_version=None,
+):
+    """
+    Validate a release tag already present in the local Git repository.
+
+    This does not modify the working tree.
+    """
+
+    normalized_version = version_from_tag(
+        tag_name
+    )
+
+    if expected_version is not None:
+        expected_normalized = (
+            version_from_tag(
+                expected_version
+            )
+        )
+
+        if (
+            normalized_version
+            != expected_normalized
+        ):
+            raise UpdateError(
+                "Release version mismatch: "
+                f"tag {tag_name} resolves to "
+                f"{normalized_version}, expected "
+                f"{expected_normalized}."
+            )
+
+    current_parsed = _parse_version(
+        __version__
+    )
+
+    candidate_parsed = _parse_version(
+        normalized_version
+    )
+
+    if current_parsed is None:
+        raise UpdateError(
+            "Installed TapeBox version cannot be compared: "
+            f"{__version__}"
+        )
+
+    if candidate_parsed is None:
+        raise UpdateError(
+            "Candidate TapeBox version cannot be compared: "
+            f"{normalized_version}"
+        )
+
+    if candidate_parsed <= current_parsed:
+        raise UpdateError(
+            "Release is not newer than the installed TapeBox "
+            f"version ({__version__}): {normalized_version}"
+        )
+
+    commit = resolve_git_ref(
+        f"refs/tags/{tag_name}"
+    )
+
+    if not git_commit_exists(
+        commit
+    ):
+        raise UpdateError(
+            "Release commit could not be verified locally: "
+            f"{commit}"
+        )
+
+    return {
+        "success": True,
+        "tag_name": tag_name,
+        "version": normalized_version,
+        "commit": commit,
+        "current_version": __version__,
+        "current_commit": get_current_commit(),
+    }
+
+
+def fetch_and_validate_release(
+    *,
+    tag_name,
+    expected_version=None,
+):
+    """
+    Fetch GitHub refs and validate the requested TapeBox release.
+
+    This is the final safety gate before an update checkpoint/install.
+    It does not checkout code, modify the database, or restart TapeBox.
+    """
+
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox has uncommitted source changes. "
+            "Refusing to prepare a release."
+        )
+
+    fetch_github_refs()
+
+    result = validate_release_candidate(
+        tag_name=tag_name,
+        expected_version=expected_version,
+    )
+
+    result["fetched"] = True
+
+    return result
