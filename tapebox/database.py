@@ -4156,244 +4156,67 @@ def import_existing_tape_files(
     - Exact tape path + same size: already cataloged.
     - Exact tape path + different size: conflict; import nothing.
     - New physical path: insert a normal file record.
+    - Catalog-only records are reported by the audit but are not
+      changed or removed by this importer.
     - No archive job is invented.
     - No checksum is invented.
     - archived_at remains NULL because TapeBox did not archive it.
     - The tape is not modified.
     """
 
-    if tape_id is None:
-        raise ValueError(
-            "Registered tape ID is required."
-        )
-
-    label = str(
-        tape_label or ""
-    ).strip().upper()
-
-    if not label:
-        raise ValueError(
-            "Tape label is required."
-        )
-
-    entries = list(
-        scanned_files or []
+    audit = audit_existing_tape_files(
+        tape_id=tape_id,
+        tape_label=tape_label,
+        scanned_files=scanned_files,
     )
 
+    conflicts = list(
+        audit["size_mismatches"]
+    )
+
+    if conflicts:
+        return {
+            "success": False,
+            "tape_id": audit["tape_id"],
+            "label": audit["label"],
+            "files_scanned": audit[
+                "physical_count"
+            ],
+            "files_imported": 0,
+            "files_existing": audit[
+                "matched_count"
+            ],
+            "conflicts": conflicts,
+            "conflict_count": len(
+                conflicts
+            ),
+            "catalog_only": audit[
+                "catalog_only"
+            ],
+            "catalog_only_count": audit[
+                "catalog_only_count"
+            ],
+            "error": (
+                "One or more physical tape paths "
+                "conflict with the catalog. "
+                "No files were imported."
+            ),
+        }
+
+    pending = list(
+        audit["physical_only"]
+    )
+
+    imported_count = 0
+
     with connect() as db:
-        tape = db.execute(
-            """
-            SELECT *
-            FROM tapes
-            WHERE id = ?
-            """,
-            (tape_id,),
-        ).fetchone()
-
-        if tape is None:
-            raise ValueError(
-                f"Registered tape ID {tape_id} "
-                "does not exist."
-            )
-
-        registered_label = str(
-            tape["label"] or ""
-        ).strip().upper()
-
-        if registered_label != label:
-            raise ValueError(
-                "Loaded tape label does not match "
-                "the registered cartridge."
-            )
-
-        existing_count = 0
-        pending = []
-        conflicts = []
-
-        seen_paths = set()
-
-        for entry in entries:
-            tape_path = str(
-                entry.get("tape_path") or ""
-            ).strip()
-
-            filename = str(
-                entry.get("filename") or ""
-            ).strip()
-
-            relative_path = str(
-                entry.get("relative_path") or ""
-            ).strip()
-
-            if not tape_path.startswith("/"):
-                raise ValueError(
-                    f"Invalid LTFS tape path: {tape_path!r}"
-                )
-
-            if (
-                tape_path == "/.tapebox"
-                or tape_path.startswith(
-                    "/.tapebox/"
-                )
-            ):
-                continue
-
-            if not filename:
-                raise ValueError(
-                    f"Missing filename for {tape_path}"
-                )
-
-            if not relative_path:
-                raise ValueError(
-                    f"Missing relative path for {tape_path}"
-                )
-
-            try:
-                size_bytes = int(
-                    entry.get("size_bytes")
-                )
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"Invalid file size for {tape_path}"
-                )
-
-            if size_bytes < 0:
-                raise ValueError(
-                    f"Invalid file size for {tape_path}"
-                )
-
-            if tape_path in seen_paths:
-                raise ValueError(
-                    "Physical LTFS scan returned duplicate "
-                    f"path: {tape_path}"
-                )
-
-            seen_paths.add(tape_path)
-
-            existing = db.execute(
-                """
-                SELECT
-                    id,
-                    filename,
-                    size_bytes,
-                    tape_path
-                FROM files
-                WHERE tape_id = ?
-                  AND tape_path = ?
-                LIMIT 1
-                """,
-                (
-                    tape_id,
-                    tape_path,
-                ),
-            ).fetchone()
-
-            if existing is not None:
-                if (
-                    int(existing["size_bytes"])
-                    == size_bytes
-                ):
-                    existing_count += 1
-                    continue
-
-                conflicts.append(
-                    {
-                        "tape_path": tape_path,
-                        "catalog_file_id": (
-                            existing["id"]
-                        ),
-                        "catalog_size_bytes": int(
-                            existing["size_bytes"]
-                        ),
-                        "physical_size_bytes": (
-                            size_bytes
-                        ),
-                    }
-                )
-                continue
-
-            part = db.execute(
-                """
-                SELECT
-                    file_parts.id,
-                    file_parts.file_id,
-                    file_parts.size_bytes
-                FROM file_parts
-                WHERE file_parts.tape_id = ?
-                  AND file_parts.tape_path = ?
-                LIMIT 1
-                """,
-                (
-                    tape_id,
-                    tape_path,
-                ),
-            ).fetchone()
-
-            if part is not None:
-                if (
-                    int(part["size_bytes"])
-                    == size_bytes
-                ):
-                    existing_count += 1
-                    continue
-
-                conflicts.append(
-                    {
-                        "tape_path": tape_path,
-                        "catalog_file_id": (
-                            part["file_id"]
-                        ),
-                        "catalog_part_id": (
-                            part["id"]
-                        ),
-                        "catalog_size_bytes": int(
-                            part["size_bytes"]
-                        ),
-                        "physical_size_bytes": (
-                            size_bytes
-                        ),
-                    }
-                )
-                continue
-
-            pending.append(
-                {
-                    "tape_path": tape_path,
-                    "relative_path": relative_path,
-                    "filename": filename,
-                    "size_bytes": size_bytes,
-                    "modified_at": (
-                        entry.get("modified_at")
-                    ),
-                }
-            )
-
-        if conflicts:
-            return {
-                "success": False,
-                "tape_id": tape_id,
-                "label": registered_label,
-                "files_scanned": len(entries),
-                "files_imported": 0,
-                "files_existing": existing_count,
-                "conflicts": conflicts,
-                "conflict_count": len(conflicts),
-                "error": (
-                    "One or more physical tape paths "
-                    "conflict with the catalog. "
-                    "No files were imported."
-                ),
-            }
-
-        imported_count = 0
-
         for entry in pending:
             relative_for_uri = (
                 entry["tape_path"].lstrip("/")
             )
 
             original_path = (
-                f"imported://{registered_label}/"
+                f"imported://{audit['label']}/"
                 f"{relative_for_uri}"
             )
 
@@ -4435,7 +4258,7 @@ def import_existing_tape_files(
                     entry["relative_path"],
                     entry["filename"],
                     entry["size_bytes"],
-                    tape_id,
+                    audit["tape_id"],
                     entry["tape_path"],
                     entry["modified_at"],
                 ),
@@ -4446,7 +4269,7 @@ def import_existing_tape_files(
         catalog_used_bytes = (
             _refresh_tape_used_bytes(
                 db,
-                tape_id,
+                audit["tape_id"],
             )
         )
 
@@ -4458,23 +4281,33 @@ def import_existing_tape_files(
             """,
             (
                 utc_now(),
-                tape_id,
+                audit["tape_id"],
             ),
         )
 
-        return {
-            "success": True,
-            "tape_id": tape_id,
-            "label": registered_label,
-            "files_scanned": len(entries),
-            "files_imported": imported_count,
-            "files_existing": existing_count,
-            "conflicts": [],
-            "conflict_count": 0,
-            "catalog_used_bytes": (
-                catalog_used_bytes
-            ),
-        }
+    return {
+        "success": True,
+        "tape_id": audit["tape_id"],
+        "label": audit["label"],
+        "files_scanned": audit[
+            "physical_count"
+        ],
+        "files_imported": imported_count,
+        "files_existing": audit[
+            "matched_count"
+        ],
+        "conflicts": [],
+        "conflict_count": 0,
+        "catalog_only": audit[
+            "catalog_only"
+        ],
+        "catalog_only_count": audit[
+            "catalog_only_count"
+        ],
+        "catalog_used_bytes": (
+            catalog_used_bytes
+        ),
+    }
 
 
 def remove_tape_from_catalog(tape_id):
