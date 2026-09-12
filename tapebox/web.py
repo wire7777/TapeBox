@@ -33,6 +33,7 @@ from tapebox.database import (
     update_tape_catalog_metadata,
     register_existing_ltfs_tape,
     import_existing_tape_files,
+    audit_existing_tape_files,
     remove_tape_from_catalog,
     get_files_by_tape,
     search_files,
@@ -8257,6 +8258,284 @@ def inspect_existing_tape_api():
             ):
                 ACTIVE_TAPE_OPERATION_ID = None
 
+
+
+
+@app.route(
+    "/api/tapes/audit",
+    methods=["POST"],
+)
+def audit_tape_catalog_api():
+    """
+    Compare a registered LTFS cartridge with the SQLite catalog.
+
+    This endpoint is strictly read-only with respect to both the
+    cartridge and the catalog. It scans the physical LTFS filesystem,
+    verifies cartridge identity, and returns comparison results.
+
+    It never imports, updates, or deletes catalog records.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    initialize_database()
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    expected_uuid = str(
+        data.get("uuid") or ""
+    ).strip()
+
+    if not expected_uuid:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Expected LTFS cartridge UUID "
+                    "is required."
+                ),
+            }
+        ), 400
+
+    registered_tape = get_tape_by_uuid(
+        expected_uuid
+    )
+
+    if registered_tape is None:
+        return jsonify(
+            {
+                "success": False,
+                "registered": False,
+                "error": (
+                    "This LTFS cartridge is not "
+                    "registered in the catalog."
+                ),
+            }
+        ), 409
+
+    operation_owner = (
+        f"catalog_audit:{uuid.uuid4()}"
+    )
+
+    #
+    # Reserve the physical tape drive before discovery,
+    # status checks, or LTFS mounting.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "currently active."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_owner
+        )
+
+    try:
+        inspector_mount = Path(
+            "/mnt/tapebox/ltfs-inspect"
+        )
+
+        normal_mount = Path(
+            "/mnt/tapebox/ltfs"
+        )
+
+        import_mount = Path(
+            "/mnt/tapebox/ltfs-import-existing"
+        )
+
+        if (
+            _is_mounted(inspector_mount)
+            or _is_mounted(normal_mount)
+            or _is_mounted(import_mount)
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "An LTFS filesystem is already "
+                        "mounted. Unmount it before "
+                        "auditing tape contents."
+                    ),
+                }
+            ), 409
+
+        drives = discover_drives()
+
+        if not drives:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "No tape drive detected."
+                    ),
+                }
+            ), 404
+
+        drive = drives[0]
+
+        nst_device = drive.get(
+            "nst_device"
+        )
+
+        sg_device = drive.get(
+            "sg_device"
+        )
+
+        if not nst_device or not sg_device:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape drive devices could "
+                        "not be resolved."
+                    ),
+                }
+            ), 500
+
+        status = get_tape_status(
+            nst_device
+        )
+
+        if not (
+            status.get("available")
+            and status.get("online")
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape cartridge is not "
+                        "online and ready."
+                    ),
+                }
+            ), 409
+
+        #
+        # READ ONLY physical LTFS scan.
+        #
+        # scan_ltfs_files() unmounts the cartridge
+        # before returning.
+        #
+        scan = scan_ltfs_files(
+            sg_device=sg_device,
+        )
+
+        if not scan.get("success"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        scan.get("error")
+                        or "LTFS file scan failed."
+                    ),
+                }
+            ), 400
+
+        loaded_uuid = str(
+            scan.get("uuid") or ""
+        ).strip()
+
+        loaded_label = str(
+            scan.get("label") or ""
+        ).strip().upper()
+
+        if loaded_uuid != expected_uuid:
+            return jsonify(
+                {
+                    "success": False,
+                    "identity_mismatch": True,
+                    "error": (
+                        "The loaded cartridge LTFS UUID "
+                        "does not match the cartridge "
+                        "selected for audit."
+                    ),
+                    "expected_uuid": expected_uuid,
+                    "loaded_uuid": loaded_uuid,
+                    "loaded_label": loaded_label,
+                }
+            ), 409
+
+        registered_label = str(
+            registered_tape["label"] or ""
+        ).strip().upper()
+
+        if loaded_label != registered_label:
+            return jsonify(
+                {
+                    "success": False,
+                    "identity_mismatch": True,
+                    "error": (
+                        "The loaded LTFS volume label "
+                        "does not match the registered "
+                        "cartridge."
+                    ),
+                    "registered_label": (
+                        registered_label
+                    ),
+                    "loaded_label": loaded_label,
+                }
+            ), 409
+
+        #
+        # The cartridge is cleanly unmounted before
+        # this comparison begins. The audit helper
+        # performs SELECTs only.
+        #
+        result = audit_existing_tape_files(
+            tape_id=registered_tape["id"],
+            tape_label=registered_label,
+            scanned_files=scan.get(
+                "files",
+                [],
+            ),
+        )
+
+        result["read_only_scan"] = True
+        result["catalog_read_only"] = True
+        result["ltfs_uuid"] = loaded_uuid
+        result["total_bytes_scanned"] = (
+            scan.get("total_bytes", 0)
+        )
+
+        return jsonify(result)
+
+    except (OSError, ValueError) as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 400
+
+    except Exception as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Could not audit tape "
+                    f"contents: {exc}"
+                ),
+            }
+        ), 500
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_owner
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
 
 
 
