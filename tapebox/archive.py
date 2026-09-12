@@ -15,6 +15,7 @@ from tapebox.database import (
     get_file_parts,
     get_file_parts_by_tape,
     get_files_by_tape,
+    get_file_by_tape_path,
     get_next_file_part_number,
     get_spanned_file_by_job_path,
     get_spanned_file_written_bytes,
@@ -1643,6 +1644,33 @@ def archive_folder_job(
             "error": f"Source is not a directory: {source}",
         }
 
+    #
+    # Archive Selected uses an internal hard-link snapshot under:
+    #
+    #   <staging>/.tapebox-jobs/Archive-...
+    #
+    # That generated snapshot directory is implementation detail
+    # and must never become part of the logical path on tape.
+    #
+    # Normal directory archives still retain source.name as their
+    # top-level /archive directory.
+    #
+    selection_snapshot = (
+        source.parent.name == ".tapebox-jobs"
+    )
+
+    def catalog_relative_for(relative):
+        relative_text = relative.as_posix()
+
+        if selection_snapshot:
+            return relative_text
+
+        return (
+            source.name
+            + "/"
+            + relative_text
+        )
+
     try:
         files = _collect_archive_folder_files(
             source
@@ -1760,9 +1788,9 @@ def archive_folder_job(
         )
 
         catalog_relative = (
-            source.name
-            + "/"
-            + relative.as_posix()
+            catalog_relative_for(
+                relative
+            )
         )
 
         if catalog_relative not in completed_paths:
@@ -2004,7 +2032,8 @@ def archive_folder_job(
 
         destination_root = (
             archive_root
-            / source.name
+            if selection_snapshot
+            else archive_root / source.name
         )
 
         destination_root.mkdir(
@@ -2075,9 +2104,9 @@ def archive_folder_job(
                 )
 
             catalog_relative = (
-                source.name
-                + "/"
-                + relative.as_posix()
+                catalog_relative_for(
+                    relative
+                )
             )
 
             existing_spanned = (
@@ -2311,12 +2340,76 @@ def archive_folder_job(
             )
 
             if destination.exists():
+                tape_path = (
+                    "/"
+                    + destination.relative_to(
+                        ARCHIVE_MOUNTPOINT
+                    ).as_posix()
+                )
+
+                existing_catalog = (
+                    get_file_by_tape_path(
+                        tape["id"],
+                        tape_path,
+                    )
+                )
+
+                if existing_catalog is not None:
+                    same_size = (
+                        int(
+                            existing_catalog[
+                                "size_bytes"
+                            ]
+                        )
+                        == source_size
+                    )
+
+                    catalog_sha256 = (
+                        existing_catalog[
+                            "checksum_sha256"
+                        ]
+                    )
+
+                    same_hash = False
+
+                    if (
+                        same_size
+                        and catalog_sha256
+                    ):
+                        source_sha256 = (
+                            _sha256_file(
+                                source_file
+                            )
+                        )
+
+                        same_hash = (
+                            source_sha256
+                            == catalog_sha256
+                        )
+
+                    if same_size and same_hash:
+                        raise FileExistsError(
+                            "Destination already exists "
+                            "on tape: "
+                            + tape_path
+                        )
+
+                    raise RuntimeError(
+                        "Destination already exists on tape "
+                        "and conflicts with the TapeBox "
+                        "catalog: "
+                        + tape_path
+                        + ". Tape/catalog reconciliation "
+                        "is required."
+                    )
+
                 raise RuntimeError(
-                    "Destination already exists on tape but "
-                    "is not recorded as completed for this job: "
-                    f"/archive/{source.name}/"
-                    f"{relative.as_posix()}. "
-                    "Tape/catalog reconciliation is required."
+                    "Destination already exists on tape "
+                    "but is not recorded in the TapeBox "
+                    "catalog: "
+                    + tape_path
+                    + ". Tape/catalog reconciliation "
+                    "is required."
                 )
 
             temp_destination = (
@@ -2549,10 +2642,10 @@ def archive_folder_job(
             )
 
             tape_path = (
-                "/archive/"
-                + source.name
-                + "/"
-                + relative.as_posix()
+                "/"
+                + destination.relative_to(
+                    ARCHIVE_MOUNTPOINT
+                ).as_posix()
             )
 
             catalog_records.append(
@@ -2561,9 +2654,7 @@ def archive_folder_job(
                         source_file
                     ),
                     "relative_path": (
-                        source.name
-                        + "/"
-                        + relative.as_posix()
+                        catalog_relative
                     ),
                     "filename": source_file.name,
                     "size_bytes": source_size,

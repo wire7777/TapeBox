@@ -435,6 +435,26 @@ window.monitorTapeBoxArchiveOperation =
                 const operation =
                     statusData.operation;
 
+                //
+                // A newer archive operation may have been prepared
+                // while an older operation monitor still had a poll
+                // in flight.
+                //
+                // Never allow a stale monitor to overwrite the UI,
+                // clear the newer operation ID, or reset the Archive
+                // button.
+                //
+                if (
+                    selectedButton
+                    && selectedButton.dataset
+                        .archiveOperationId
+                    && selectedButton.dataset
+                        .archiveOperationId
+                        !== operationId
+                ) {
+                    return;
+                }
+
                 if (message) {
                     message.textContent =
                         operation.message ||
@@ -514,6 +534,96 @@ window.monitorTapeBoxArchiveOperation =
                                     )
                                 );
                             });
+                    }
+
+                    //
+                    // An existing destination is an expected,
+                    // non-destructive collision. Present it as a
+                    // friendly informational message instead of a
+                    // generic archive failure.
+                    //
+                    // Do NOT match the separate reconciliation
+                    // error:
+                    //
+                    //   "Destination already exists on tape but..."
+                    //
+                    // That condition represents a catalog/tape
+                    // consistency problem and must remain visible
+                    // as a real archive failure.
+                    //
+                    if (
+                        operation.status === "failed"
+                    ) {
+                        const failureMessage =
+                            String(
+                                operation.message || ""
+                            );
+
+                        const existsPrefix =
+                            "Destination already exists on tape: ";
+
+                        if (
+                            failureMessage.startsWith(
+                                existsPrefix
+                            )
+                        ) {
+                            const tapePath =
+                                failureMessage
+                                    .slice(
+                                        existsPrefix.length
+                                    )
+                                    .trim();
+
+                            if (message) {
+                                message.textContent =
+                                    "File already exists on tape.";
+                            }
+
+                            if (detail) {
+                                detail.textContent =
+                                    tapePath
+                                    ? (
+                                        "Existing tape file: "
+                                        + tapePath
+                                        + "\n\n"
+                                        + "The existing file was "
+                                        + "not overwritten."
+                                    )
+                                    : (
+                                        "The destination already "
+                                        + "exists on tape. "
+                                        + "The existing file was "
+                                        + "not overwritten."
+                                    );
+                            }
+
+                            await window.tapeboxAlert({
+                                title:
+                                    "File Already Exists",
+
+                                message:
+                                    tapePath
+                                    ? (
+                                        tapePath
+                                        + " already exists on "
+                                        + "the loaded tape. "
+                                        + "The existing file was "
+                                        + "not overwritten."
+                                    )
+                                    : (
+                                        "This file already exists "
+                                        + "on the loaded tape. "
+                                        + "The existing file was "
+                                        + "not overwritten."
+                                    ),
+
+                                type:
+                                    "info",
+
+                                buttonText:
+                                    "OK",
+                            });
+                        }
                     }
 
                     enableArchiveControls(

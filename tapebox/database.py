@@ -2605,6 +2605,46 @@ def get_next_file_part_number(file_id):
     return int(highest) + 1
 
 
+def get_file_by_tape_path(
+    tape_id,
+    tape_path,
+):
+    """
+    Return the cataloged normal file occupying one exact
+    physical path on one tape.
+
+    Spanned file parts are tracked separately in file_parts.
+    """
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT
+                id,
+                archive_job_id,
+                original_path,
+                relative_path,
+                filename,
+                size_bytes,
+                checksum_sha256,
+                tape_id,
+                tape_path,
+                is_spanned,
+                archived_at,
+                verified_at,
+                original_created_at,
+                original_modified_at
+            FROM files
+            WHERE tape_id = ?
+              AND tape_path = ?
+            LIMIT 1
+            """,
+            (
+                tape_id,
+                tape_path,
+            ),
+        ).fetchone()
+
+
 def get_spanned_file_by_job_path(
     archive_job_id,
     relative_path,
