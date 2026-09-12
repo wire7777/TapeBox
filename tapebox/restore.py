@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 
 from tapebox.database import (
     get_file_by_id,
+    get_files_by_ids,
     get_file_parts,
+    get_file_parts_for_files,
 )
 
 from tapebox.tape import (
@@ -1848,6 +1850,14 @@ def _build_archive_tape_work(
     destination = Path(destination)
     tape_work = {}
 
+    parts_by_file_id = get_file_parts_for_files(
+        [
+            row["id"]
+            for row in remaining
+            if row["is_spanned"]
+        ]
+    )
+
     for row in remaining:
         if not row["is_spanned"]:
             ltfs_uuid = row["ltfs_uuid"]
@@ -1882,8 +1892,9 @@ def _build_archive_tape_work(
 
             continue
 
-        parts = get_file_parts(
-            row["id"]
+        parts = parts_by_file_id.get(
+            row["id"],
+            [],
         )
 
         if not parts:
@@ -2045,10 +2056,14 @@ def restore_selected_files(
             "error": "No files were selected.",
         }
 
+    files_by_id = get_files_by_ids(
+        normalized_ids
+    )
+
     files = []
 
     for file_id in normalized_ids:
-        row = get_file_by_id(
+        row = files_by_id.get(
             file_id
         )
 
@@ -2253,6 +2268,14 @@ def _restore_catalog_files(
     #
     locally_finalized_ids = set()
 
+    parts_by_file_id = get_file_parts_for_files(
+        [
+            row["id"]
+            for row in remaining
+            if row["is_spanned"]
+        ]
+    )
+
     for row in list(remaining):
         if not row["is_spanned"]:
             continue
@@ -2273,8 +2296,9 @@ def _restore_catalog_files(
         if not partial.exists():
             continue
 
-        parts = get_file_parts(
-            row["id"]
+        parts = parts_by_file_id.get(
+            row["id"],
+            [],
         )
 
         if not parts:
