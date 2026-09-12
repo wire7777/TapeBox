@@ -1194,3 +1194,203 @@ def fetch_and_validate_release(
     result["fetched"] = True
 
     return result
+
+
+
+def checkout_release_commit(
+    commit,
+):
+    """
+    Switch the TapeBox source tree to an exact validated release commit.
+
+    The caller is responsible for creating a rollback checkpoint first.
+
+    This function changes source code only. It does not restart TapeBox
+    and does not modify the catalog database.
+    """
+
+    commit = str(
+        commit or ""
+    ).strip()
+
+    if not commit:
+        raise UpdateError(
+            "Release commit cannot be empty."
+        )
+
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox has uncommitted source changes. "
+            "Refusing to switch source code."
+        )
+
+    if not git_commit_exists(
+        commit
+    ):
+        raise UpdateError(
+            "Release commit does not exist locally: "
+            f"{commit}"
+        )
+
+    previous_commit = get_current_commit()
+    previous_branch = get_current_branch()
+
+    if commit == previous_commit:
+        raise UpdateError(
+            "Release commit is already installed."
+        )
+
+    #
+    # Use detached HEAD for installed release commits. This keeps the
+    # installation pinned to the exact commit represented by the release
+    # instead of silently following a development branch.
+    #
+    _run(
+        [
+            "git",
+            "checkout",
+            "--detach",
+            commit,
+        ],
+        cwd=APP_DIR,
+        timeout=120,
+    )
+
+    installed_commit = get_current_commit()
+
+    if installed_commit != commit:
+        raise UpdateError(
+            "Git checkout completed but TapeBox is not at the "
+            "requested release commit."
+        )
+
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox working tree is not clean after release checkout."
+        )
+
+    return {
+        "success": True,
+        "previous_commit": previous_commit,
+        "previous_branch": previous_branch,
+        "installed_commit": installed_commit,
+        "branch": get_current_branch(),
+    }
+
+
+def restore_source_checkpoint(
+    *,
+    previous_commit,
+    previous_branch=None,
+):
+    """
+    Restore TapeBox source code to a previously recorded Git checkpoint.
+
+    If the checkpoint originally used a branch, restore that branch and
+    force it back to the exact recorded commit. If it was detached, return
+    to the recorded commit in detached mode.
+
+    This function restores source code only. Catalog restoration is a
+    separate operation because code and database rollback must be
+    coordinated by the external updater.
+    """
+
+    previous_commit = str(
+        previous_commit or ""
+    ).strip()
+
+    previous_branch = (
+        str(previous_branch).strip()
+        if previous_branch
+        else None
+    )
+
+    if not previous_commit:
+        raise UpdateError(
+            "Previous commit cannot be empty."
+        )
+
+    if not git_commit_exists(
+        previous_commit
+    ):
+        raise UpdateError(
+            "Previous TapeBox commit does not exist locally: "
+            f"{previous_commit}"
+        )
+
+    #
+    # An update checkout should itself be clean. Refuse to destroy
+    # unexpected files or modifications created after the update.
+    #
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox source has unexpected changes. "
+            "Refusing automatic source rollback."
+        )
+
+    if previous_branch:
+        #
+        # Restore the original branch, then force its working tree/index
+        # to the exact checkpoint commit. This is appropriate because the
+        # rollback record captured that exact branch+commit pair before
+        # the update began.
+        #
+        _run(
+            [
+                "git",
+                "checkout",
+                previous_branch,
+            ],
+            cwd=APP_DIR,
+            timeout=120,
+        )
+
+        _run(
+            [
+                "git",
+                "reset",
+                "--hard",
+                previous_commit,
+            ],
+            cwd=APP_DIR,
+            timeout=120,
+        )
+
+    else:
+        _run(
+            [
+                "git",
+                "checkout",
+                "--detach",
+                previous_commit,
+            ],
+            cwd=APP_DIR,
+            timeout=120,
+        )
+
+    restored_commit = get_current_commit()
+    restored_branch = get_current_branch()
+
+    if restored_commit != previous_commit:
+        raise UpdateError(
+            "Source rollback completed but the expected "
+            "commit was not restored."
+        )
+
+    if previous_branch:
+        if restored_branch != previous_branch:
+            raise UpdateError(
+                "Source rollback restored the commit but not "
+                "the original branch."
+            )
+
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox working tree is not clean after source rollback."
+        )
+
+    return {
+        "success": True,
+        "restored_commit": restored_commit,
+        "restored_branch": restored_branch,
+    }
