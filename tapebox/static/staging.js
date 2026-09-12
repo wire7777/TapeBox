@@ -278,131 +278,62 @@ document.addEventListener(
             return;
         }
 
-        const confirmed =
-            await window.tapeboxConfirm({
+        //
+        // Individual Archive uses the same safe workflow as
+        // Archive Selected:
+        //
+        //     prepare selection
+        //     wait for tape
+        //     explicit Start Archive click
+        //
+        // Never call /api/staging/archive directly here.
+        //
+        const checkboxes =
+            Array.from(
+                document.querySelectorAll(
+                    ".staging-select-checkbox"
+                )
+            );
+
+        for (const checkbox of checkboxes) {
+            checkbox.checked = (
+                checkbox.dataset.path === path
+            );
+
+            checkbox.dispatchEvent(
+                new Event(
+                    "change",
+                    {
+                        bubbles: true,
+                    }
+                )
+            );
+        }
+
+        const selectedButton =
+            document.getElementById(
+                "staging-archive-selected-button"
+            );
+
+        if (!selectedButton) {
+            await window.tapeboxAlert({
                 title:
-                    "Archive to Tape?",
+                    "Archive Error",
 
                 message:
-                    `Archive "${path}" to the `
-                    + "currently loaded tape?",
+                    "Archive Selected control "
+                    + "was not found.",
 
-                warning:
-                    "TapeBox will begin writing "
-                    + "this item to tape.",
-
-                confirmText:
-                    "Archive",
-
-                danger: false,
+                type:
+                    "error",
             });
 
-        if (!confirmed) {
             return;
         }
 
-        const panel =
-            document.getElementById(
-                "archive-status-panel"
-            );
-
-        const message =
-            document.getElementById(
-                "archive-status-message"
-            );
-
-        const detail =
-            document.getElementById(
-                "archive-status-detail"
-            );
-
-        if (panel) {
-            panel.style.display = "block";
-        }
-
-        if (message) {
-            message.textContent =
-                "Starting archive...";
-        }
-
-        if (detail) {
-            detail.textContent =
-                `Source: ${path}`;
-        }
-
-        document
-            .querySelectorAll(
-                ".archive-button"
-            )
-            .forEach((item) => {
-                item.disabled = true;
-            });
-
-        try {
-            const form =
-                new FormData();
-
-            form.append(
-                "path",
-                path
-            );
-
-            const response =
-                await fetch(
-                    "/api/staging/archive",
-                    {
-                        method: "POST",
-                        body: form
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            if (
-                !response.ok ||
-                !data.success
-            ) {
-                throw new Error(
-                    data.error ||
-                    "Could not start archive."
-                );
-            }
-
-            const operationId =
-                data.operation_id;
-
-            if (message) {
-                message.textContent =
-                    "Archive started...";
-            }
-
-            window.monitorTapeBoxArchiveOperation(
-                operationId
-            );
-
-        } catch (error) {
-            if (message) {
-                message.textContent =
-                    "Archive failed to start.";
-            }
-
-            if (detail) {
-                detail.textContent =
-                    error.message;
-            }
-
-            document
-                .querySelectorAll(
-                    ".archive-button"
-                )
-                .forEach((item) => {
-                    item.disabled = false;
-                });
-        }
+        selectedButton.click();
     }
 );
-
 
 
 //
@@ -438,7 +369,9 @@ window.monitorTapeBoxArchiveOperation =
             panel.style.display = "block";
         }
 
-        function enableArchiveControls() {
+        function enableArchiveControls(
+            operation=null
+        ) {
             document
                 .querySelectorAll(
                     ".archive-button"
@@ -447,11 +380,36 @@ window.monitorTapeBoxArchiveOperation =
                     item.disabled = false;
                 });
 
-            if (selectedButton) {
-                selectedButton.disabled = false;
-                selectedButton.textContent =
-                    "Archive Selected";
+            if (!selectedButton) {
+                return;
             }
+
+            selectedButton.disabled = false;
+
+            if (
+                operation
+                && operation.status
+                    === "waiting_for_tape"
+                && operation.type
+                    === "archive_staging_selection"
+            ) {
+                selectedButton.dataset
+                    .archiveOperationId =
+                        operation.id;
+
+                selectedButton.textContent =
+                    operation.job_id
+                    ? "Continue Archive"
+                    : "Start Archive";
+
+                return;
+            }
+
+            delete selectedButton.dataset
+                .archiveOperationId;
+
+            selectedButton.textContent =
+                "Archive Selected";
         }
 
         async function poll() {
@@ -528,7 +486,39 @@ window.monitorTapeBoxArchiveOperation =
                     operation.status ===
                         "waiting_for_tape"
                 ) {
-                    enableArchiveControls();
+                    //
+                    // Only clear the staging selection after the
+                    // archive has fully completed.
+                    //
+                    // Keep failed and waiting-for-tape selections
+                    // intact so they can be retried/continued.
+                    //
+                    if (
+                        operation.status ===
+                            "completed"
+                    ) {
+                        document
+                            .querySelectorAll(
+                                ".staging-select-checkbox:checked"
+                            )
+                            .forEach((checkbox) => {
+                                checkbox.checked =
+                                    false;
+
+                                checkbox.dispatchEvent(
+                                    new Event(
+                                        "change",
+                                        {
+                                            bubbles: true,
+                                        }
+                                    )
+                                );
+                            });
+                    }
+
+                    enableArchiveControls(
+                        operation
+                    );
                     return;
                 }
 
@@ -538,17 +528,122 @@ window.monitorTapeBoxArchiveOperation =
                 );
 
             } catch (error) {
+                //
+                // A temporary polling failure does NOT mean the
+                // tape operation stopped.
+                //
+                // Keep archive controls locked while we ask the
+                // server whether an archive operation is still
+                // active.
+                //
                 if (message) {
                     message.textContent =
-                        "Archive status error.";
+                        "Connection interrupted — "
+                        + "checking archive status...";
                 }
 
                 if (detail) {
                     detail.textContent =
-                        error.message;
+                        (
+                            error.message
+                            || String(error)
+                        )
+                        + "\n\n"
+                        + "Reconnecting to TapeBox...";
                 }
 
-                enableArchiveControls();
+                document
+                    .querySelectorAll(
+                        ".archive-button"
+                    )
+                    .forEach((item) => {
+                        item.disabled = true;
+                    });
+
+                if (selectedButton) {
+                    selectedButton.disabled = true;
+
+                    selectedButton.dataset
+                        .archiveOperationId =
+                            operationId;
+
+                    selectedButton.textContent =
+                        "Reconnecting...";
+                }
+
+                try {
+                    const reconnectResponse =
+                        await fetch(
+                            "/api/staging/archive-operation",
+                            {
+                                cache: "no-store",
+                            }
+                        );
+
+                    const reconnectData =
+                        await reconnectResponse.json();
+
+                    if (
+                        reconnectResponse.ok
+                        && reconnectData.success
+                    ) {
+                        const activeOperation =
+                            reconnectData.operation;
+
+                        if (
+                            activeOperation
+                            && activeOperation.id
+                        ) {
+                            operationId =
+                                activeOperation.id;
+
+                            if (selectedButton) {
+                                selectedButton.dataset
+                                    .archiveOperationId =
+                                        operationId;
+                            }
+
+                            setTimeout(
+                                poll,
+                                1000
+                            );
+
+                            return;
+                        }
+
+                        //
+                        // The server answered successfully and
+                        // explicitly reports no active staging
+                        // archive. It is now safe to unlock the
+                        // controls.
+                        //
+                        if (message) {
+                            message.textContent =
+                                "No active archive operation.";
+                        }
+
+                        if (detail) {
+                            detail.textContent =
+                                "TapeBox is reachable again. "
+                                + "No archive operation is "
+                                + "currently active.";
+                        }
+
+                        enableArchiveControls();
+                        return;
+                    }
+
+                } catch (reconnectError) {
+                    //
+                    // Server is still temporarily unavailable.
+                    // Keep the operation locked and try again.
+                    //
+                }
+
+                setTimeout(
+                    poll,
+                    2000
+                );
             }
         }
 
@@ -2034,6 +2129,140 @@ window.monitorTapeBoxArchiveOperation =
     archiveSelectedButton.addEventListener(
         "click",
         async () => {
+            const preparedOperationId =
+                archiveSelectedButton.dataset
+                    .archiveOperationId || "";
+
+            const panel =
+                document.getElementById(
+                    "archive-status-panel"
+                );
+
+            const message =
+                document.getElementById(
+                    "archive-status-message"
+                );
+
+            const detail =
+                document.getElementById(
+                    "archive-status-detail"
+                );
+
+            //
+            // A selection has already been prepared.
+            // This click explicitly starts tape I/O.
+            //
+            if (preparedOperationId) {
+                stopWaitingTapeStatus();
+
+                archiveSelectedButton.disabled = true;
+                archiveSelectedButton.textContent =
+                    "Checking Tape...";
+
+                try {
+                    const response = await fetch(
+                        `/api/operations/${
+                            preparedOperationId
+                        }/archive-start`,
+                        {
+                            method: "POST",
+                        }
+                    );
+
+                    const data =
+                        await response.json();
+
+                    if (
+                        !response.ok
+                        || !data.success
+                    ) {
+                        if (
+                            data.waiting_for_tape
+                        ) {
+                            if (panel) {
+                                panel.style.display =
+                                    "block";
+                            }
+
+                            if (message) {
+                                message.textContent =
+                                    data.error
+                                    || (
+                                        "Insert a tape "
+                                        + "cartridge."
+                                    );
+                            }
+
+                            if (detail) {
+                                detail.textContent =
+                                    "Status: "
+                                    + "waiting_for_tape";
+                            }
+
+                            archiveSelectedButton
+                                .disabled = false;
+
+                            archiveSelectedButton
+                                .textContent =
+                                    "Start Archive";
+
+                            return;
+                        }
+
+                        throw new Error(
+                            data.error
+                            || "Could not start archive."
+                        );
+                    }
+
+                    archiveSelectedButton
+                        .textContent =
+                            "Archive Running...";
+
+                    //
+                    // Keep the operation ID attached to the
+                    // button. If this archive later needs the
+                    // next cartridge, the same operation can
+                    // be continued instead of creating a new
+                    // archive job.
+                    //
+                    archiveSelectedButton.dataset
+                        .archiveOperationId =
+                            preparedOperationId;
+
+                    window.monitorTapeBoxArchiveOperation(
+                        preparedOperationId
+                    );
+
+                    return;
+
+                } catch (error) {
+                    await window.tapeboxAlert({
+                        title:
+                            "Archive Failed",
+
+                        message:
+                            error.message
+                            || String(error),
+
+                        type:
+                            "error",
+                    });
+
+                    archiveSelectedButton.disabled =
+                        false;
+
+                    archiveSelectedButton.textContent =
+                        "Start Archive";
+
+                    return;
+                }
+            }
+
+            //
+            // First click: prepare the selected archive only.
+            // Do not touch the tape yet.
+            //
             const paths =
                 selectedPaths();
 
@@ -2046,7 +2275,7 @@ window.monitorTapeBoxArchiveOperation =
 
             archiveSelectedButton.disabled = true;
             archiveSelectedButton.textContent =
-                "Starting Archive...";
+                "Preparing Archive...";
 
             try {
                 const response = await fetch(
@@ -2072,7 +2301,7 @@ window.monitorTapeBoxArchiveOperation =
                 ) {
                     throw new Error(
                         data.error
-                        || "Could not start archive."
+                        || "Could not prepare archive."
                     );
                 }
 
@@ -2086,20 +2315,9 @@ window.monitorTapeBoxArchiveOperation =
                     );
                 }
 
-                const panel =
-                    document.getElementById(
-                        "archive-status-panel"
-                    );
-
-                const message =
-                    document.getElementById(
-                        "archive-status-message"
-                    );
-
-                const detail =
-                    document.getElementById(
-                        "archive-status-detail"
-                    );
+                archiveSelectedButton.dataset
+                    .archiveOperationId =
+                        operationId;
 
                 if (panel) {
                     panel.style.display =
@@ -2108,12 +2326,20 @@ window.monitorTapeBoxArchiveOperation =
 
                 if (message) {
                     message.textContent =
-                        "Selected archive started...";
+                        (
+                            data.operation
+                            && data.operation.message
+                        )
+                        || (
+                            "Insert a cartridge, then "
+                            + "click Start Archive."
+                        );
                 }
 
                 if (detail) {
                     detail.textContent =
-                        paths.length
+                        "Status: waiting_for_tape\n\n"
+                        + paths.length
                         + (
                             paths.length === 1
                             ? " selected item"
@@ -2121,10 +2347,13 @@ window.monitorTapeBoxArchiveOperation =
                         );
                 }
 
-                archiveSelectedButton.textContent =
-                    "Archive Running...";
+                archiveSelectedButton.disabled =
+                    false;
 
-                window.monitorTapeBoxArchiveOperation(
+                archiveSelectedButton.textContent =
+                    "Start Archive";
+
+                watchWaitingTapeStatus(
                     operationId
                 );
 
@@ -2151,5 +2380,290 @@ window.monitorTapeBoxArchiveOperation =
     );
 
 
+    //
+    // While a prepared archive is waiting for the user to press
+    // Start Archive, keep the displayed cartridge state current.
+    //
+    // This is status-only. It never starts tape I/O automatically.
+    //
+    let waitingTapeStatusTimer = null;
+
+    function stopWaitingTapeStatus() {
+        if (waitingTapeStatusTimer !== null) {
+            clearTimeout(
+                waitingTapeStatusTimer
+            );
+
+            waitingTapeStatusTimer = null;
+        }
+    }
+
+    async function watchWaitingTapeStatus(
+        operationId
+    ) {
+        stopWaitingTapeStatus();
+
+        async function checkTape() {
+            const selectedButton =
+                document.getElementById(
+                    "staging-archive-selected-button"
+                );
+
+            if (
+                !selectedButton
+                || selectedButton.dataset
+                    .archiveOperationId !== operationId
+            ) {
+                stopWaitingTapeStatus();
+                return;
+            }
+
+            const message =
+                document.getElementById(
+                    "archive-status-message"
+                );
+
+            const detail =
+                document.getElementById(
+                    "archive-status-detail"
+                );
+
+            try {
+                const operationResponse =
+                    await fetch(
+                        `/api/operations/${operationId}`,
+                        {
+                            cache: "no-store",
+                        }
+                    );
+
+                const operationData =
+                    await operationResponse.json();
+
+                if (
+                    !operationResponse.ok
+                    || !operationData.success
+                    || !operationData.operation
+                    || operationData.operation.status
+                        !== "waiting_for_tape"
+                ) {
+                    stopWaitingTapeStatus();
+                    return;
+                }
+
+                const tapeResponse =
+                    await fetch(
+                        "/api/tape/status",
+                        {
+                            cache: "no-store",
+                        }
+                    );
+
+                const tapeData =
+                    await tapeResponse.json();
+
+                if (
+                    tapeResponse.ok
+                    && tapeData.success
+                ) {
+                    if (
+                        tapeData.online === true
+                        && tapeData.available === true
+                    ) {
+                        if (message) {
+                            message.textContent =
+                                "Tape is online and ready. "
+                                + "Click Start Archive.";
+                        }
+
+                        if (detail) {
+                            const lines =
+                                detail.textContent
+                                    .split("\n");
+
+                            lines[0] =
+                                "Archive State: Ready to start";
+
+                            detail.textContent =
+                                lines.join("\n");
+                        }
+
+                    } else if (tapeData.busy) {
+                        if (message) {
+                            message.textContent =
+                                "Tape drive is currently in use.";
+                        }
+
+                        if (detail) {
+                            const lines =
+                                detail.textContent
+                                    .split("\n");
+
+                            lines[0] =
+                                "Archive State: Drive in use";
+
+                            detail.textContent =
+                                lines.join("\n");
+                        }
+
+                    } else {
+                        if (message) {
+                            message.textContent =
+                                "Tape cartridge is not online yet.";
+                        }
+
+                        if (detail) {
+                            const lines =
+                                detail.textContent
+                                    .split("\n");
+
+                            lines[0] =
+                                "Archive State: Waiting for tape";
+
+                            detail.textContent =
+                                lines.join("\n");
+                        }
+                    }
+                }
+
+            } catch (error) {
+                //
+                // A status-only polling failure must not change
+                // the prepared archive or unlock/start anything.
+                //
+            }
+
+            waitingTapeStatusTimer =
+                setTimeout(
+                    checkTape,
+                    2000
+                );
+        }
+
+        checkTape();
+    }
+
+
+    async function reconnectArchiveOperation() {
+        try {
+            const response = await fetch(
+                "/api/staging/archive-operation",
+                {
+                    cache: "no-store",
+                }
+            );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                return;
+            }
+
+            const operation =
+                data.operation;
+
+            if (!operation) {
+                return;
+            }
+
+            archiveSelectedButton.dataset
+                .archiveOperationId =
+                    operation.id;
+
+            const panel =
+                document.getElementById(
+                    "archive-status-panel"
+                );
+
+            const message =
+                document.getElementById(
+                    "archive-status-message"
+                );
+
+            const detail =
+                document.getElementById(
+                    "archive-status-detail"
+                );
+
+            if (panel) {
+                panel.style.display =
+                    "block";
+            }
+
+            if (message) {
+                message.textContent =
+                    operation.message
+                    || operation.status
+                    || "Archive waiting.";
+            }
+
+            if (detail) {
+                const lines = [
+                    `Status: ${operation.status}`
+                ];
+
+                if (operation.job_id) {
+                    lines.push(
+                        `Archive Job: ${operation.job_id}`
+                    );
+                }
+
+                if (
+                    operation.messages
+                    && operation.messages.length
+                ) {
+                    lines.push("");
+                    lines.push(
+                        ...operation.messages.slice(-8)
+                    );
+                }
+
+                detail.textContent =
+                    lines.join("\n");
+            }
+
+            if (
+                operation.status
+                === "waiting_for_tape"
+            ) {
+                archiveSelectedButton.disabled =
+                    false;
+
+                archiveSelectedButton.textContent =
+                    operation.job_id
+                    ? "Continue Archive"
+                    : "Start Archive";
+
+                watchWaitingTapeStatus(
+                    operation.id
+                );
+
+                return;
+            }
+
+            archiveSelectedButton.disabled =
+                true;
+
+            archiveSelectedButton.textContent =
+                "Archive Running...";
+
+            window.monitorTapeBoxArchiveOperation(
+                operation.id
+            );
+
+        } catch (error) {
+            console.error(
+                "Could not reconnect archive operation:",
+                error
+            );
+        }
+    }
+
+
     updateSelection();
+    reconnectArchiveOperation();
 })();

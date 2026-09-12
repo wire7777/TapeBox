@@ -57,6 +57,7 @@ from tapebox.restore import (
 from tapebox.archive import (
     archive_path,
     create_archive_selection_snapshot,
+    resume_archive_job,
 )
 
 from tapebox.file_times import (
@@ -581,10 +582,27 @@ def _archive_staging_worker(
                         else "Finalizing archive..."
                     )
 
-        result = archive_path(
-            Path(source_path),
-            progress_callback=archive_progress,
-        )
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            existing_job_id = (
+                operation.get("job_id")
+                if operation
+                else None
+            )
+
+        if existing_job_id is not None:
+            result = resume_archive_job(
+                existing_job_id,
+                progress_callback=archive_progress,
+            )
+        else:
+            result = archive_path(
+                Path(source_path),
+                progress_callback=archive_progress,
+            )
 
         with OPERATION_STATE_LOCK:
             operation = OPERATIONS[
@@ -1505,6 +1523,67 @@ def tape_status_api():
                 "density": None,
                 "write_protected": False,
                 "beginning_of_tape": False,
+            }
+        )
+
+    #
+    # Do not interrogate /dev/nst while an archive or restore
+    # operation owns the physical tape drive.
+    #
+    # LTFS may have exclusive ownership of the SCSI device while
+    # mounting, seeking, writing, flushing, or unmounting. Running
+    # "mt status" concurrently can therefore report a temporary
+    # unavailable/offline state and can also compete with LTFS.
+    #
+    # ACTIVE_TAPE_OPERATION_ID is authoritative for drive ownership.
+    #
+    with OPERATION_STATE_LOCK:
+        active_operation_id = (
+            ACTIVE_TAPE_OPERATION_ID
+        )
+
+        active_operation = (
+            OPERATIONS.get(
+                active_operation_id
+            )
+            if active_operation_id
+            else None
+        )
+
+        active_snapshot = (
+            _operation_snapshot(
+                active_operation
+            )
+            if active_operation
+            else None
+        )
+
+    if (
+        active_operation_id
+        and active_operation_id != "inspector"
+    ):
+        return jsonify(
+            {
+                "success": True,
+                "detected": True,
+                # Physical ONLINE/available state is intentionally
+                # unknown while LTFS owns the drive. Do not issue
+                # low-level tape commands merely to populate UI.
+                "online": None,
+                "available": None,
+                "mounted": False,
+                "busy": True,
+                "operation_id": active_operation_id,
+                "operation": active_snapshot,
+                "drive": drive.get(
+                    "description",
+                    "Tape Drive",
+                ),
+                "device": nst_device,
+                "density": None,
+                "write_protected": False,
+                "beginning_of_tape": False,
+                "state": "busy",
             }
         )
 
@@ -4493,12 +4572,14 @@ def staging_archive_selected_api():
         "destination": str(
             snapshot_path
         ),
-        "status": "starting",
+        "status": "waiting_for_tape",
         "message": (
-            "Starting selected archive..."
+            "Insert a cartridge, then click "
+            "Start Archive."
         ),
         "messages": [
-            "Starting selected archive..."
+            "Archive selection prepared.",
+            "Waiting for a tape cartridge.",
         ],
         "transfer": None,
         "result": None,
@@ -4523,16 +4604,322 @@ def staging_archive_selected_api():
             operation_id
         ] = operation
 
+    #
+    # Preparing an archive selection must not start tape I/O.
+    #
+    # Release the physical drive reservation while the operation
+    # waits for the user to insert a cartridge and explicitly
+    # start the archive.
+    #
+    with OPERATION_STATE_LOCK:
+        if (
+            ACTIVE_TAPE_OPERATION_ID
+            == operation_id
+        ):
+            ACTIVE_TAPE_OPERATION_ID = None
+
+    return jsonify(
+        {
+            "success": True,
+            "operation_id": operation_id,
+            "operation": (
+                _operation_snapshot(
+                    operation
+                )
+            ),
+            "selection": operation[
+                "selection"
+            ],
+        }
+    )
+
+
+
+@app.route(
+    "/api/staging/archive-operation",
+    methods=["GET"],
+)
+def staging_archive_operation_api():
+    """
+    Return the current staging-selection archive operation, if any.
+
+    This allows the Staging page to reconnect after a browser
+    refresh or navigation instead of losing the prepared operation
+    ID that had only existed in the DOM.
+    """
+
+    with OPERATION_STATE_LOCK:
+        candidates = []
+
+        for operation in OPERATIONS.values():
+            if (
+                operation.get("type")
+                != "archive_staging_selection"
+            ):
+                continue
+
+            if operation.get("status") not in {
+                "waiting_for_tape",
+                "starting",
+                "running",
+            }:
+                continue
+
+            candidates.append(operation)
+
+        if not candidates:
+            return jsonify(
+                {
+                    "success": True,
+                    "operation": None,
+                }
+            )
+
+        #
+        # There should normally only be one physical-tape
+        # operation. Prefer the active operation if present.
+        #
+        operation = None
+
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            if (
+                active
+                and active.get("type")
+                    == "archive_staging_selection"
+            ):
+                operation = active
+
+        if operation is None:
+            operation = candidates[-1]
+
+        snapshot = _operation_snapshot(
+            operation
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "operation": snapshot,
+        }
+    )
+
+
+@app.route(
+    "/api/operations/<operation_id>/archive-start",
+    methods=["POST"],
+)
+def archive_operation_start_api(
+    operation_id,
+):
+    """
+    Explicitly start a prepared staging archive after the user
+    has inserted a tape cartridge.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    inspector_mount = Path(
+        "/mnt/tapebox/ltfs-inspect"
+    )
+
+    if _is_mounted(
+        inspector_mount
+    ):
+        return jsonify(
+            {
+                "success": False,
+                "busy": True,
+                "error": (
+                    "Tape Inspector currently owns "
+                    "the tape drive."
+                ),
+            }
+        ), 409
+
+    with OPERATION_STATE_LOCK:
+        operation = OPERATIONS.get(
+            operation_id
+        )
+
+        if operation is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Archive operation not found."
+                    ),
+                }
+            ), 404
+
+        if (
+            operation.get("type")
+            != "archive_staging_selection"
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "This operation is not a "
+                        "staging archive."
+                    ),
+                }
+            ), 409
+
+        if (
+            operation.get("status")
+            != "waiting_for_tape"
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Archive is not waiting "
+                        "to be started."
+                    ),
+                }
+            ), 409
+
+        if ACTIVE_TAPE_OPERATION_ID:
+            active = OPERATIONS.get(
+                ACTIVE_TAPE_OPERATION_ID
+            )
+
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is "
+                        "already running."
+                    ),
+                    "operation": (
+                        _operation_snapshot(active)
+                        if active
+                        else None
+                    ),
+                }
+            ), 409
+
+    drives = discover_drives()
+
+    if not drives:
+        return jsonify(
+            {
+                "success": False,
+                "waiting_for_tape": True,
+                "error": (
+                    "No tape drive was detected."
+                ),
+            }
+        ), 409
+
+    drive = drives[0]
+    nst_device = drive.get(
+        "nst_device"
+    )
+
+    if not nst_device:
+        return jsonify(
+            {
+                "success": False,
+                "waiting_for_tape": True,
+                "error": (
+                    "Tape drive has no nst device."
+                ),
+            }
+        ), 409
+
+    tape_status = get_tape_status(
+        nst_device
+    )
+
+    if (
+        not tape_status.get("available")
+        or not tape_status.get("online")
+    ):
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is not None:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+                operation["message"] = (
+                    "Insert a tape cartridge, "
+                    "wait for it to become ready, "
+                    "then click Start Archive."
+                )
+
+        return jsonify(
+            {
+                "success": False,
+                "waiting_for_tape": True,
+                "error": (
+                    "Tape cartridge is not online yet."
+                ),
+                "tape_status": tape_status,
+            }
+        ), 409
+
+    with OPERATION_STATE_LOCK:
+        operation = OPERATIONS.get(
+            operation_id
+        )
+
+        if operation is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Archive operation not found."
+                    ),
+                }
+            ), 404
+
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation "
+                        "started first."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_id
+        )
+
+        operation["status"] = "starting"
+        operation["message"] = (
+            "Starting archive..."
+        )
+        operation["messages"].append(
+            "Tape is online. Starting archive..."
+        )
+
+        source_path = operation[
+            "destination"
+        ]
+
     worker = threading.Thread(
         target=_archive_staging_worker,
         args=(
             operation_id,
-            str(snapshot_path),
+            source_path,
             True,
         ),
         daemon=True,
         name=(
-            f"tapebox-archive-selected-"
+            f"tapebox-archive-start-"
             f"{operation_id[:8]}"
         ),
     )
@@ -4542,29 +4929,25 @@ def staging_archive_selected_api():
 
     except Exception as exc:
         with OPERATION_STATE_LOCK:
-            operation["status"] = "failed"
-            operation["message"] = str(exc)
-            operation["result"] = {
-                "success": False,
-                "error": str(exc),
-            }
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is not None:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+                operation["message"] = str(
+                    exc
+                )
 
             if (
                 ACTIVE_TAPE_OPERATION_ID
                 == operation_id
             ):
-                ACTIVE_TAPE_OPERATION_ID = None
-
-        #
-        # Worker never started, so no archive job can depend on
-        # this snapshot.
-        #
-        try:
-            shutil.rmtree(
-                snapshot_path
-            )
-        except Exception:
-            pass
+                ACTIVE_TAPE_OPERATION_ID = (
+                    None
+                )
 
         return jsonify(
             {
@@ -4582,9 +4965,6 @@ def staging_archive_selected_api():
                     operation
                 )
             ),
-            "selection": operation[
-                "selection"
-            ],
         }
     )
 

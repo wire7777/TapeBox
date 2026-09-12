@@ -376,15 +376,30 @@
                 );
             }
 
+            const busy =
+                Boolean(
+                    data.busy
+                );
+
             const ready =
                 Boolean(
-                    data.detected
+                    !busy
+                    && data.detected
                     && data.available
                     && data.online
                     && !data.mounted
                 );
 
-            if (ready) {
+            if (busy) {
+                statusElement.innerHTML =
+                    "<strong>Drive status:</strong> "
+                    + "Tape drive is currently in use.";
+
+                startButton.disabled = true;
+                startButton.textContent =
+                    "Drive In Use...";
+
+            } else if (ready) {
                 statusElement.innerHTML =
                     "<strong>Drive status:</strong> Drive ready.";
 

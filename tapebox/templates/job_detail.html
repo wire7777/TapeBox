@@ -975,12 +975,69 @@ Job #{{ job["id"] }} · TapeBox
                 );
             }
 
+            const driveBusy = Boolean(
+                data.busy
+            );
+
             driveReady = Boolean(
-                data.online
+                !driveBusy
+                && data.online
                 && data.available
             );
 
-            if (driveReady) {
+            if (driveBusy) {
+                drivePanel.classList.remove(
+                    "offline"
+                );
+
+                drivePanel.classList.add(
+                    "online"
+                );
+
+                driveState.textContent = (
+                    "TAPE BUSY"
+                );
+
+                const operationType = (
+                    data.operation
+                    && data.operation.type
+                )
+                    ? String(
+                        data.operation.type
+                    )
+                    : "";
+
+                let activity = "TapeBox operation";
+
+                if (
+                    operationType.includes(
+                        "archive"
+                    )
+                ) {
+                    activity = "Archiving";
+
+                } else if (
+                    operationType.includes(
+                        "restore"
+                    )
+                ) {
+                    activity = "Restoring";
+
+                } else if (
+                    operationType.includes(
+                        "inspector"
+                    )
+                ) {
+                    activity = "Tape Inspector";
+                }
+
+                driveDetail.textContent = (
+                    (data.drive || "Tape Drive")
+                    + " · "
+                    + activity
+                );
+
+            } else if (driveReady) {
                 drivePanel.classList.remove(
                     "offline"
                 );
