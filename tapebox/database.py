@@ -3797,6 +3797,350 @@ def repair_catalog_database():
     }
 
 
+
+def audit_existing_tape_files(
+    tape_id,
+    tape_label,
+    scanned_files,
+):
+    """
+    Compare a read-only physical LTFS scan with the TapeBox catalog.
+
+    This function is deliberately read-only. It never inserts,
+    updates, or deletes catalog records and never accesses the
+    physical tape itself.
+
+    Physical paths are compared against both:
+      - normal files assigned directly to the tape
+      - physical parts of spanned files
+
+    Results are reported in both directions so callers can see
+    uncataloged physical files as well as catalog records whose
+    physical LTFS paths were not found.
+    """
+
+    if tape_id is None:
+        raise ValueError(
+            "Registered tape ID is required."
+        )
+
+    label = str(
+        tape_label or ""
+    ).strip().upper()
+
+    if not label:
+        raise ValueError(
+            "Tape label is required."
+        )
+
+    entries = list(
+        scanned_files or []
+    )
+
+    with connect() as db:
+        tape = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE id = ?
+            """,
+            (tape_id,),
+        ).fetchone()
+
+        if tape is None:
+            raise ValueError(
+                f"Registered tape ID {tape_id} "
+                "does not exist."
+            )
+
+        registered_label = str(
+            tape["label"] or ""
+        ).strip().upper()
+
+        if registered_label != label:
+            raise ValueError(
+                "Loaded tape label does not match "
+                "the registered cartridge."
+            )
+
+        catalog_rows = db.execute(
+            """
+            SELECT
+                'file' AS record_type,
+                files.id AS catalog_file_id,
+                NULL AS catalog_part_id,
+                NULL AS part_number,
+                files.tape_path AS tape_path,
+                files.size_bytes AS size_bytes,
+                files.filename AS filename,
+                files.relative_path AS relative_path
+            FROM files
+            WHERE files.tape_id = ?
+              AND files.tape_path IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                'part' AS record_type,
+                files.id AS catalog_file_id,
+                file_parts.id AS catalog_part_id,
+                file_parts.part_number AS part_number,
+                file_parts.tape_path AS tape_path,
+                file_parts.size_bytes AS size_bytes,
+                files.filename AS filename,
+                files.relative_path AS relative_path
+            FROM file_parts
+            JOIN files
+                ON files.id = file_parts.file_id
+            WHERE file_parts.tape_id = ?
+              AND file_parts.tape_path IS NOT NULL
+            """,
+            (
+                tape_id,
+                tape_id,
+            ),
+        ).fetchall()
+
+    catalog_by_path = {}
+
+    for row in catalog_rows:
+        item = dict(row)
+        tape_path = str(
+            item["tape_path"] or ""
+        ).strip()
+
+        if not tape_path:
+            continue
+
+        if tape_path in catalog_by_path:
+            raise RuntimeError(
+                "Catalog contains duplicate physical "
+                f"LTFS path: {tape_path}"
+            )
+
+        catalog_by_path[tape_path] = item
+
+    physical_by_path = {}
+
+    for entry in entries:
+        tape_path = str(
+            entry.get("tape_path") or ""
+        ).strip()
+
+        filename = str(
+            entry.get("filename") or ""
+        ).strip()
+
+        relative_path = str(
+            entry.get("relative_path") or ""
+        ).strip()
+
+        if not tape_path.startswith("/"):
+            raise ValueError(
+                f"Invalid LTFS tape path: {tape_path!r}"
+            )
+
+        if (
+            tape_path == "/.tapebox"
+            or tape_path.startswith(
+                "/.tapebox/"
+            )
+        ):
+            continue
+
+        if not filename:
+            raise ValueError(
+                f"Missing filename for {tape_path}"
+            )
+
+        if not relative_path:
+            raise ValueError(
+                f"Missing relative path for {tape_path}"
+            )
+
+        try:
+            size_bytes = int(
+                entry.get("size_bytes")
+            )
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Invalid file size for {tape_path}"
+            )
+
+        if size_bytes < 0:
+            raise ValueError(
+                f"Invalid file size for {tape_path}"
+            )
+
+        if tape_path in physical_by_path:
+            raise ValueError(
+                "Physical LTFS scan returned duplicate "
+                f"path: {tape_path}"
+            )
+
+        physical_by_path[tape_path] = {
+            "tape_path": tape_path,
+            "relative_path": relative_path,
+            "filename": filename,
+            "size_bytes": size_bytes,
+            "modified_at": entry.get(
+                "modified_at"
+            ),
+        }
+
+    matched = []
+    physical_only = []
+    size_mismatches = []
+
+    for tape_path, physical in (
+        physical_by_path.items()
+    ):
+        catalog = catalog_by_path.get(
+            tape_path
+        )
+
+        if catalog is None:
+            physical_only.append(
+                physical
+            )
+            continue
+
+        catalog_size = int(
+            catalog["size_bytes"]
+        )
+
+        if catalog_size != physical["size_bytes"]:
+            size_mismatches.append(
+                {
+                    "tape_path": tape_path,
+                    "record_type": (
+                        catalog["record_type"]
+                    ),
+                    "catalog_file_id": (
+                        catalog["catalog_file_id"]
+                    ),
+                    "catalog_part_id": (
+                        catalog["catalog_part_id"]
+                    ),
+                    "part_number": (
+                        catalog["part_number"]
+                    ),
+                    "catalog_size_bytes": (
+                        catalog_size
+                    ),
+                    "physical_size_bytes": (
+                        physical["size_bytes"]
+                    ),
+                }
+            )
+            continue
+
+        matched.append(
+            {
+                "tape_path": tape_path,
+                "record_type": (
+                    catalog["record_type"]
+                ),
+                "catalog_file_id": (
+                    catalog["catalog_file_id"]
+                ),
+                "catalog_part_id": (
+                    catalog["catalog_part_id"]
+                ),
+                "part_number": (
+                    catalog["part_number"]
+                ),
+                "size_bytes": catalog_size,
+            }
+        )
+
+    catalog_only = []
+
+    for tape_path, catalog in (
+        catalog_by_path.items()
+    ):
+        if tape_path in physical_by_path:
+            continue
+
+        catalog_only.append(
+            {
+                "tape_path": tape_path,
+                "record_type": (
+                    catalog["record_type"]
+                ),
+                "catalog_file_id": (
+                    catalog["catalog_file_id"]
+                ),
+                "catalog_part_id": (
+                    catalog["catalog_part_id"]
+                ),
+                "part_number": (
+                    catalog["part_number"]
+                ),
+                "size_bytes": int(
+                    catalog["size_bytes"]
+                ),
+                "filename": (
+                    catalog["filename"]
+                ),
+                "relative_path": (
+                    catalog["relative_path"]
+                ),
+            }
+        )
+
+    matched.sort(
+        key=lambda item: item["tape_path"]
+    )
+
+    physical_only.sort(
+        key=lambda item: item["tape_path"]
+    )
+
+    catalog_only.sort(
+        key=lambda item: item["tape_path"]
+    )
+
+    size_mismatches.sort(
+        key=lambda item: item["tape_path"]
+    )
+
+    issue_count = (
+        len(physical_only)
+        + len(catalog_only)
+        + len(size_mismatches)
+    )
+
+    return {
+        "success": True,
+        "clean": issue_count == 0,
+        "tape_id": int(tape_id),
+        "label": registered_label,
+        "physical_count": len(
+            physical_by_path
+        ),
+        "catalog_physical_count": len(
+            catalog_by_path
+        ),
+        "matched_count": len(matched),
+        "physical_only_count": len(
+            physical_only
+        ),
+        "catalog_only_count": len(
+            catalog_only
+        ),
+        "size_mismatch_count": len(
+            size_mismatches
+        ),
+        "issue_count": issue_count,
+        "matched": matched,
+        "physical_only": physical_only,
+        "catalog_only": catalog_only,
+        "size_mismatches": size_mismatches,
+    }
+
+
+
 def import_existing_tape_files(
     tape_id,
     tape_label,
