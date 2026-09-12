@@ -3802,6 +3802,10 @@ def audit_existing_tape_files(
     tape_id,
     tape_label,
     scanned_files,
+    manifest=None,
+    manifest_present=None,
+    manifest_error=None,
+    ltfs_uuid=None,
 ):
     """
     Compare a read-only physical LTFS scan with the TapeBox catalog.
@@ -3872,6 +3876,7 @@ def audit_existing_tape_files(
                 NULL AS part_number,
                 files.tape_path AS tape_path,
                 files.size_bytes AS size_bytes,
+                files.checksum_sha256 AS checksum_sha256,
                 files.filename AS filename,
                 files.relative_path AS relative_path
             FROM files
@@ -3887,6 +3892,7 @@ def audit_existing_tape_files(
                 file_parts.part_number AS part_number,
                 file_parts.tape_path AS tape_path,
                 file_parts.size_bytes AS size_bytes,
+                file_parts.checksum_sha256 AS checksum_sha256,
                 files.filename AS filename,
                 files.relative_path AS relative_path
             FROM file_parts
@@ -3987,6 +3993,466 @@ def audit_existing_tape_files(
                 "modified_at"
             ),
         }
+
+    #
+    # Manifest reconciliation is optional so existing users of
+    # audit_existing_tape_files(), such as the physical-file
+    # importer, retain their original behavior.
+    #
+    manifest_audit_enabled = (
+        manifest_present is not None
+        or manifest is not None
+        or manifest_error is not None
+        or ltfs_uuid is not None
+    )
+
+    manifest_issues = []
+    manifest_by_path = {}
+    manifest_valid = False
+
+    if manifest_audit_enabled:
+
+        def add_manifest_issue(
+            code,
+            message,
+            tape_path=None,
+        ):
+            issue = {
+                "code": code,
+                "message": message,
+            }
+
+            if tape_path:
+                issue["tape_path"] = tape_path
+
+            manifest_issues.append(
+                issue
+            )
+
+        if manifest_present is False:
+            add_manifest_issue(
+                "manifest_missing",
+                (
+                    str(manifest_error)
+                    if manifest_error
+                    else (
+                        "/.tapebox/manifest.json "
+                        "is missing."
+                    )
+                ),
+            )
+
+        elif manifest_error:
+            add_manifest_issue(
+                "manifest_read_error",
+                str(manifest_error),
+            )
+
+        elif not isinstance(
+            manifest,
+            dict,
+        ):
+            add_manifest_issue(
+                "manifest_invalid_root",
+                (
+                    "manifest.json root is not "
+                    "a JSON object."
+                ),
+            )
+
+        else:
+            if manifest.get(
+                "schema_version"
+            ) != 1:
+                add_manifest_issue(
+                    "manifest_schema_version",
+                    (
+                        "Unsupported manifest.json "
+                        "schema version."
+                    ),
+                )
+
+            manifest_tape = manifest.get(
+                "tape"
+            )
+
+            if not isinstance(
+                manifest_tape,
+                dict,
+            ):
+                add_manifest_issue(
+                    "manifest_tape_identity_missing",
+                    (
+                        "manifest.json is missing "
+                        "tape identity."
+                    ),
+                )
+
+            else:
+                manifest_uuid = str(
+                    manifest_tape.get(
+                        "ltfs_uuid"
+                    )
+                    or ""
+                ).strip()
+
+                expected_uuid = str(
+                    ltfs_uuid or ""
+                ).strip()
+
+                if (
+                    expected_uuid
+                    and manifest_uuid
+                    != expected_uuid
+                ):
+                    add_manifest_issue(
+                        "manifest_uuid_mismatch",
+                        (
+                            "Manifest LTFS UUID does not "
+                            "match the loaded cartridge."
+                        ),
+                    )
+
+                manifest_label = str(
+                    manifest_tape.get(
+                        "label"
+                    )
+                    or ""
+                ).strip().upper()
+
+                if (
+                    manifest_label
+                    != registered_label
+                ):
+                    add_manifest_issue(
+                        "manifest_label_mismatch",
+                        (
+                            "Manifest tape label does not "
+                            "match the registered cartridge."
+                        ),
+                    )
+
+            manifest_files = manifest.get(
+                "files"
+            )
+
+            if not isinstance(
+                manifest_files,
+                list,
+            ):
+                add_manifest_issue(
+                    "manifest_files_invalid",
+                    (
+                        "manifest.json files field "
+                        "is not a list."
+                    ),
+                )
+                manifest_files = None
+
+            manifest_parts = manifest.get(
+                "spanned_parts",
+                [],
+            )
+
+            if not isinstance(
+                manifest_parts,
+                list,
+            ):
+                add_manifest_issue(
+                    "manifest_parts_invalid",
+                    (
+                        "manifest.json spanned_parts "
+                        "field is not a list."
+                    ),
+                )
+                manifest_parts = None
+
+            if manifest_files is not None:
+                declared_count = manifest.get(
+                    "file_count"
+                )
+
+                if declared_count is not None:
+                    try:
+                        declared_count = int(
+                            declared_count
+                        )
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+                        add_manifest_issue(
+                            "manifest_file_count_invalid",
+                            (
+                                "manifest.json file_count "
+                                "is not an integer."
+                            ),
+                        )
+                    else:
+                        if (
+                            declared_count
+                            != len(manifest_files)
+                        ):
+                            add_manifest_issue(
+                                "manifest_file_count_mismatch",
+                                (
+                                    "manifest.json file_count "
+                                    "does not match files list."
+                                ),
+                            )
+
+            if manifest_parts is not None:
+                declared_part_count = (
+                    manifest.get(
+                        "spanned_part_count"
+                    )
+                )
+
+                if (
+                    declared_part_count
+                    is not None
+                ):
+                    try:
+                        declared_part_count = int(
+                            declared_part_count
+                        )
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+                        add_manifest_issue(
+                            "manifest_part_count_invalid",
+                            (
+                                "manifest.json "
+                                "spanned_part_count is "
+                                "not an integer."
+                            ),
+                        )
+                    else:
+                        if (
+                            declared_part_count
+                            != len(manifest_parts)
+                        ):
+                            add_manifest_issue(
+                                "manifest_part_count_mismatch",
+                                (
+                                    "manifest.json "
+                                    "spanned_part_count does "
+                                    "not match spanned_parts."
+                                ),
+                            )
+
+            def add_manifest_entry(
+                entry,
+                record_type,
+                index,
+            ):
+                if not isinstance(
+                    entry,
+                    dict,
+                ):
+                    add_manifest_issue(
+                        "manifest_entry_invalid",
+                        (
+                            f"Manifest {record_type} "
+                            f"entry {index} is invalid."
+                        ),
+                    )
+                    return
+
+                if record_type == "file":
+                    required = (
+                        "relative_path",
+                        "filename",
+                        "size_bytes",
+                        "tape_path",
+                    )
+                    size_field = "size_bytes"
+                    checksum_field = "sha256"
+                    part_number = None
+
+                else:
+                    required = (
+                        "relative_path",
+                        "filename",
+                        "file_size_bytes",
+                        "file_sha256",
+                        "part_number",
+                        "part_size_bytes",
+                        "part_sha256",
+                        "tape_path",
+                    )
+                    size_field = (
+                        "part_size_bytes"
+                    )
+                    checksum_field = (
+                        "part_sha256"
+                    )
+                    part_number = entry.get(
+                        "part_number"
+                    )
+
+                missing = [
+                    field
+                    for field in required
+                    if field not in entry
+                ]
+
+                if missing:
+                    add_manifest_issue(
+                        "manifest_entry_missing_fields",
+                        (
+                            f"Manifest {record_type} "
+                            f"entry {index} is missing: "
+                            + ", ".join(missing)
+                        ),
+                    )
+                    return
+
+                if record_type == "part":
+                    try:
+                        part_number = int(
+                            part_number
+                        )
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+                        add_manifest_issue(
+                            "manifest_part_number_invalid",
+                            (
+                                "Manifest spanned part "
+                                f"entry {index} has an "
+                                "invalid part_number."
+                            ),
+                        )
+                        return
+
+                    if part_number < 1:
+                        add_manifest_issue(
+                            "manifest_part_number_invalid",
+                            (
+                                "Manifest spanned part "
+                                f"entry {index} has an "
+                                "invalid part_number."
+                            ),
+                        )
+                        return
+
+                tape_path = str(
+                    entry.get(
+                        "tape_path"
+                    )
+                    or ""
+                ).strip()
+
+                if not tape_path.startswith(
+                    "/archive/"
+                ):
+                    add_manifest_issue(
+                        "manifest_unsafe_tape_path",
+                        (
+                            "Manifest contains invalid "
+                            f"tape path: {tape_path!r}"
+                        ),
+                        tape_path or None,
+                    )
+                    return
+
+                try:
+                    size_bytes = int(
+                        entry.get(
+                            size_field
+                        )
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    add_manifest_issue(
+                        "manifest_size_invalid",
+                        (
+                            "Manifest contains invalid "
+                            f"size for {tape_path}."
+                        ),
+                        tape_path,
+                    )
+                    return
+
+                if size_bytes < 0:
+                    add_manifest_issue(
+                        "manifest_size_invalid",
+                        (
+                            "Manifest contains negative "
+                            f"size for {tape_path}."
+                        ),
+                        tape_path,
+                    )
+                    return
+
+                if tape_path in manifest_by_path:
+                    add_manifest_issue(
+                        "manifest_duplicate_path",
+                        (
+                            "Manifest contains duplicate "
+                            f"physical path: {tape_path}"
+                        ),
+                        tape_path,
+                    )
+                    return
+
+                manifest_by_path[
+                    tape_path
+                ] = {
+                    "tape_path": tape_path,
+                    "record_type": record_type,
+                    "part_number": part_number,
+                    "size_bytes": size_bytes,
+                    "filename": str(
+                        entry.get(
+                            "filename"
+                        )
+                        or ""
+                    ),
+                    "relative_path": str(
+                        entry.get(
+                            "relative_path"
+                        )
+                        or ""
+                    ),
+                    "checksum_sha256": str(
+                        entry.get(
+                            checksum_field
+                        )
+                        or ""
+                    ),
+                }
+
+            if manifest_files is not None:
+                for index, entry in enumerate(
+                    manifest_files,
+                    start=1,
+                ):
+                    add_manifest_entry(
+                        entry,
+                        "file",
+                        index,
+                    )
+
+            if manifest_parts is not None:
+                for index, entry in enumerate(
+                    manifest_parts,
+                    start=1,
+                ):
+                    add_manifest_entry(
+                        entry,
+                        "part",
+                        index,
+                    )
+
+            manifest_valid = (
+                len(manifest_issues) == 0
+            )
 
     matched = []
     physical_only = []
@@ -4111,9 +4577,318 @@ def audit_existing_tape_files(
         + len(size_mismatches)
     )
 
+    physical_missing_from_manifest = []
+    manifest_missing_physically = []
+    manifest_missing_from_catalog = []
+    catalog_missing_from_manifest = []
+
+    manifest_physical_size_mismatches = []
+    manifest_catalog_mismatches = []
+    three_way_matched = []
+
+    if (
+        manifest_audit_enabled
+        and manifest_valid
+    ):
+        for tape_path, physical in (
+            physical_by_path.items()
+        ):
+            if tape_path not in manifest_by_path:
+                physical_missing_from_manifest.append(
+                    physical
+                )
+
+        for tape_path, manifest_item in (
+            manifest_by_path.items()
+        ):
+            physical = physical_by_path.get(
+                tape_path
+            )
+
+            catalog = catalog_by_path.get(
+                tape_path
+            )
+
+            if physical is None:
+                manifest_missing_physically.append(
+                    manifest_item
+                )
+
+            if catalog is None:
+                manifest_missing_from_catalog.append(
+                    manifest_item
+                )
+
+            if (
+                physical is not None
+                and physical["size_bytes"]
+                != manifest_item["size_bytes"]
+            ):
+                manifest_physical_size_mismatches.append(
+                    {
+                        "tape_path": tape_path,
+                        "manifest_size_bytes": (
+                            manifest_item[
+                                "size_bytes"
+                            ]
+                        ),
+                        "physical_size_bytes": (
+                            physical[
+                                "size_bytes"
+                            ]
+                        ),
+                    }
+                )
+
+            if catalog is not None:
+                differences = []
+
+                catalog_size = int(
+                    catalog["size_bytes"]
+                )
+
+                if (
+                    catalog_size
+                    != manifest_item[
+                        "size_bytes"
+                    ]
+                ):
+                    differences.append(
+                        "size_bytes"
+                    )
+
+                if (
+                    str(
+                        catalog["filename"]
+                        or ""
+                    )
+                    != manifest_item[
+                        "filename"
+                    ]
+                ):
+                    differences.append(
+                        "filename"
+                    )
+
+                if (
+                    str(
+                        catalog[
+                            "relative_path"
+                        ]
+                        or ""
+                    )
+                    != manifest_item[
+                        "relative_path"
+                    ]
+                ):
+                    differences.append(
+                        "relative_path"
+                    )
+
+                catalog_checksum = str(
+                    catalog[
+                        "checksum_sha256"
+                    ]
+                    or ""
+                )
+
+                if (
+                    catalog_checksum
+                    != manifest_item[
+                        "checksum_sha256"
+                    ]
+                ):
+                    differences.append(
+                        "checksum_sha256"
+                    )
+
+                catalog_record_type = str(
+                    catalog[
+                        "record_type"
+                    ]
+                )
+
+                if (
+                    catalog_record_type
+                    != manifest_item[
+                        "record_type"
+                    ]
+                ):
+                    differences.append(
+                        "record_type"
+                    )
+
+                if (
+                    catalog_record_type
+                    == "part"
+                    and int(
+                        catalog[
+                            "part_number"
+                        ]
+                    )
+                    != int(
+                        manifest_item[
+                            "part_number"
+                        ]
+                    )
+                ):
+                    differences.append(
+                        "part_number"
+                    )
+
+                if differences:
+                    manifest_catalog_mismatches.append(
+                        {
+                            "tape_path": tape_path,
+                            "differences": (
+                                differences
+                            ),
+                            "record_type": (
+                                catalog_record_type
+                            ),
+                            "catalog_size_bytes": (
+                                catalog_size
+                            ),
+                            "manifest_size_bytes": (
+                                manifest_item[
+                                    "size_bytes"
+                                ]
+                            ),
+                        }
+                    )
+
+                elif (
+                    physical is not None
+                    and physical[
+                        "size_bytes"
+                    ]
+                    == manifest_item[
+                        "size_bytes"
+                    ]
+                ):
+                    three_way_matched.append(
+                        {
+                            "tape_path": (
+                                tape_path
+                            ),
+                            "record_type": (
+                                catalog_record_type
+                            ),
+                            "size_bytes": (
+                                catalog_size
+                            ),
+                        }
+                    )
+
+        for tape_path, catalog in (
+            catalog_by_path.items()
+        ):
+            if tape_path not in manifest_by_path:
+                catalog_missing_from_manifest.append(
+                    {
+                        "tape_path": tape_path,
+                        "record_type": (
+                            catalog[
+                                "record_type"
+                            ]
+                        ),
+                        "catalog_file_id": (
+                            catalog[
+                                "catalog_file_id"
+                            ]
+                        ),
+                        "catalog_part_id": (
+                            catalog[
+                                "catalog_part_id"
+                            ]
+                        ),
+                        "part_number": (
+                            catalog[
+                                "part_number"
+                            ]
+                        ),
+                        "size_bytes": int(
+                            catalog[
+                                "size_bytes"
+                            ]
+                        ),
+                    }
+                )
+
+        physical_missing_from_manifest.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+        manifest_missing_physically.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+        manifest_missing_from_catalog.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+        catalog_missing_from_manifest.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+        manifest_physical_size_mismatches.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+        manifest_catalog_mismatches.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+        three_way_matched.sort(
+            key=lambda item: item[
+                "tape_path"
+            ]
+        )
+
+    reconciliation_issue_count = (
+        len(manifest_issues)
+        + len(physical_missing_from_manifest)
+        + len(manifest_missing_physically)
+        + len(manifest_missing_from_catalog)
+        + len(catalog_missing_from_manifest)
+        + len(
+            manifest_physical_size_mismatches
+        )
+        + len(manifest_catalog_mismatches)
+    )
+
+    overall_issue_count = (
+        issue_count
+        + reconciliation_issue_count
+    )
+
+    clean = (
+        issue_count == 0
+        and (
+            not manifest_audit_enabled
+            or (
+                manifest_valid
+                and reconciliation_issue_count
+                == 0
+            )
+        )
+    )
+
     return {
         "success": True,
-        "clean": issue_count == 0,
+        "clean": clean,
         "tape_id": int(tape_id),
         "label": registered_label,
         "physical_count": len(
@@ -4132,11 +4907,99 @@ def audit_existing_tape_files(
         "size_mismatch_count": len(
             size_mismatches
         ),
+
+        #
+        # Preserve the original issue_count semantics:
+        # physical LTFS versus SQLite only.
+        #
         "issue_count": issue_count,
+
         "matched": matched,
         "physical_only": physical_only,
         "catalog_only": catalog_only,
         "size_mismatches": size_mismatches,
+
+        #
+        # Three-way reconciliation fields.
+        #
+        "manifest_audit_enabled": (
+            manifest_audit_enabled
+        ),
+        "manifest_present": (
+            bool(manifest_present)
+            if manifest_audit_enabled
+            else None
+        ),
+        "manifest_valid": (
+            manifest_valid
+            if manifest_audit_enabled
+            else None
+        ),
+        "manifest_count": (
+            len(manifest_by_path)
+            if manifest_audit_enabled
+            else None
+        ),
+        "manifest_issue_count": len(
+            manifest_issues
+        ),
+        "manifest_issues": manifest_issues,
+
+        "three_way_matched_count": len(
+            three_way_matched
+        ),
+        "three_way_matched": (
+            three_way_matched
+        ),
+
+        "physical_missing_from_manifest_count": len(
+            physical_missing_from_manifest
+        ),
+        "physical_missing_from_manifest": (
+            physical_missing_from_manifest
+        ),
+
+        "manifest_missing_physically_count": len(
+            manifest_missing_physically
+        ),
+        "manifest_missing_physically": (
+            manifest_missing_physically
+        ),
+
+        "manifest_missing_from_catalog_count": len(
+            manifest_missing_from_catalog
+        ),
+        "manifest_missing_from_catalog": (
+            manifest_missing_from_catalog
+        ),
+
+        "catalog_missing_from_manifest_count": len(
+            catalog_missing_from_manifest
+        ),
+        "catalog_missing_from_manifest": (
+            catalog_missing_from_manifest
+        ),
+
+        "manifest_physical_size_mismatch_count": len(
+            manifest_physical_size_mismatches
+        ),
+        "manifest_physical_size_mismatches": (
+            manifest_physical_size_mismatches
+        ),
+
+        "manifest_catalog_mismatch_count": len(
+            manifest_catalog_mismatches
+        ),
+        "manifest_catalog_mismatches": (
+            manifest_catalog_mismatches
+        ),
+
+        "reconciliation_issue_count": (
+            reconciliation_issue_count
+        ),
+        "overall_issue_count": (
+            overall_issue_count
+        ),
     }
 
 

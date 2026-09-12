@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -1375,6 +1376,9 @@ def scan_ltfs_files(
         "files": [],
         "file_count": 0,
         "total_bytes": 0,
+        "manifest": None,
+        "manifest_present": False,
+        "manifest_error": None,
         "error": None,
     }
 
@@ -1440,6 +1444,72 @@ def scan_ltfs_files(
         if not result["label"]:
             raise RuntimeError(
                 "LTFS cartridge label could not be read."
+            )
+
+        #
+        # Read TapeBox metadata while the cartridge is
+        # already mounted read-only.
+        #
+        # A missing or invalid manifest is an audit finding,
+        # not a physical LTFS scan failure.
+        #
+        manifest_path = (
+            mount_path
+            / ".tapebox"
+            / "manifest.json"
+        )
+
+        try:
+            if manifest_path.is_symlink():
+                result["manifest_present"] = True
+                result["manifest_error"] = (
+                    "/.tapebox/manifest.json is a symbolic link."
+                )
+
+            elif manifest_path.is_file():
+                result["manifest_present"] = True
+
+                try:
+                    with manifest_path.open(
+                        "r",
+                        encoding="utf-8",
+                    ) as handle:
+                        manifest = json.load(
+                            handle
+                        )
+
+                    if not isinstance(
+                        manifest,
+                        dict,
+                    ):
+                        result["manifest_error"] = (
+                            "manifest.json root is not "
+                            "a JSON object."
+                        )
+                    else:
+                        result["manifest"] = (
+                            manifest
+                        )
+
+                except (
+                    OSError,
+                    UnicodeError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    result["manifest_error"] = (
+                        f"Could not read manifest.json: "
+                        f"{exc}"
+                    )
+
+            else:
+                result["manifest_error"] = (
+                    "/.tapebox/manifest.json is missing."
+                )
+
+        except OSError as exc:
+            result["manifest_error"] = (
+                f"Could not inspect manifest.json: "
+                f"{exc}"
             )
 
         files = []

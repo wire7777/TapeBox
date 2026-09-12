@@ -390,9 +390,112 @@ Tapes · TapeBox
             </div>
 
             <div
+                style="
+                    margin-top: 18px;
+                    padding-top: 16px;
+                    border-top:
+                        1px solid rgba(255,255,255,0.12);
+                "
+            >
+                <h4
+                    style="
+                        margin-top: 0;
+                        margin-bottom: 12px;
+                    "
+                >
+                    Manifest Reconciliation
+                </h4>
+
+                <div
+                    style="
+                        display: grid;
+                        grid-template-columns:
+                            repeat(
+                                auto-fit,
+                                minmax(150px, 1fr)
+                            );
+                        gap: 12px;
+                        margin-bottom: 16px;
+                    "
+                >
+                    <div>
+                        <strong>
+                            Three-Way Match
+                        </strong>
+                        <div
+                            id="audit-three-way-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Physical Missing From Manifest
+                        </strong>
+                        <div
+                            id="audit-physical-missing-manifest-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Manifest Missing Physically
+                        </strong>
+                        <div
+                            id="audit-manifest-missing-physical-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Manifest Missing From Catalog
+                        </strong>
+                        <div
+                            id="audit-manifest-missing-catalog-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Catalog Missing From Manifest
+                        </strong>
+                        <div
+                            id="audit-catalog-missing-manifest-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Tape / Manifest Size
+                        </strong>
+                        <div
+                            id="audit-manifest-physical-size-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Manifest / Catalog Metadata
+                        </strong>
+                        <div
+                            id="audit-manifest-catalog-count"
+                        >0</div>
+                    </div>
+
+                    <div>
+                        <strong>
+                            Manifest Validation Issues
+                        </strong>
+                        <div
+                            id="audit-manifest-issue-count"
+                        >0</div>
+                    </div>
+                </div>
+            </div>
+
+            <div
                 id="existing-audit-details"
                 style="
-                    max-height: 280px;
+                    max-height: 360px;
                     overflow: auto;
                     word-break: break-all;
                 "
@@ -969,6 +1072,38 @@ Tapes · TapeBox
             "audit-size-mismatch-count"
         ).textContent = "0";
 
+        document.getElementById(
+            "audit-three-way-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-physical-missing-manifest-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-manifest-missing-physical-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-manifest-missing-catalog-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-catalog-missing-manifest-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-manifest-physical-size-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-manifest-catalog-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-manifest-issue-count"
+        ).textContent = "0";
+
         message.className =
             "tapebox-modal-message";
 
@@ -1395,12 +1530,67 @@ Tapes · TapeBox
                 ).textContent =
                     data.size_mismatch_count || 0;
 
+                document.getElementById(
+                    "audit-three-way-count"
+                ).textContent =
+                    data.three_way_matched_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-physical-missing-manifest-count"
+                ).textContent =
+                    data
+                        .physical_missing_from_manifest_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-manifest-missing-physical-count"
+                ).textContent =
+                    data
+                        .manifest_missing_physically_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-manifest-missing-catalog-count"
+                ).textContent =
+                    data
+                        .manifest_missing_from_catalog_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-catalog-missing-manifest-count"
+                ).textContent =
+                    data
+                        .catalog_missing_from_manifest_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-manifest-physical-size-count"
+                ).textContent =
+                    data
+                        .manifest_physical_size_mismatch_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-manifest-catalog-count"
+                ).textContent =
+                    data
+                        .manifest_catalog_mismatch_count
+                    || 0;
+
+                document.getElementById(
+                    "audit-manifest-issue-count"
+                ).textContent =
+                    data.manifest_issue_count
+                    || 0;
+
                 if (data.clean) {
                     auditSummary.className =
                         "tapebox-modal-message success";
 
                     auditSummary.textContent =
-                        "Catalog and physical tape match.";
+                        "Physical tape, manifest, "
+                        + "and catalog match.";
                 } else {
                     auditSummary.className =
                         "tapebox-modal-message error";
@@ -1445,6 +1635,119 @@ Tapes · TapeBox
                         + formatBytes(
                             item.physical_size_bytes
                         )
+                );
+
+                addAuditSection(
+                    "Physical Files Missing From Manifest",
+                    (
+                        data
+                            .physical_missing_from_manifest
+                        || []
+                    ),
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + formatBytes(
+                            item.size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Manifest Entries Missing Physically",
+                    (
+                        data
+                            .manifest_missing_physically
+                        || []
+                    ),
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + formatBytes(
+                            item.size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Manifest Entries Missing From Catalog",
+                    (
+                        data
+                            .manifest_missing_from_catalog
+                        || []
+                    ),
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + formatBytes(
+                            item.size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Catalog Entries Missing From Manifest",
+                    (
+                        data
+                            .catalog_missing_from_manifest
+                        || []
+                    ),
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + formatBytes(
+                            item.size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Tape / Manifest Size Mismatches",
+                    (
+                        data
+                            .manifest_physical_size_mismatches
+                        || []
+                    ),
+                    (item) =>
+                        item.tape_path
+                        + " — manifest "
+                        + formatBytes(
+                            item.manifest_size_bytes
+                        )
+                        + ", tape "
+                        + formatBytes(
+                            item.physical_size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Manifest / Catalog Metadata Mismatches",
+                    (
+                        data
+                            .manifest_catalog_mismatches
+                        || []
+                    ),
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + (
+                            item.differences
+                            || []
+                        ).join(", ")
+                );
+
+                addAuditSection(
+                    "Manifest Validation Issues",
+                    (
+                        data.manifest_issues
+                        || []
+                    ),
+                    (item) =>
+                        (
+                            item.tape_path
+                            ? (
+                                item.tape_path
+                                + " — "
+                            )
+                            : ""
+                        )
+                        + item.message
                 );
 
                 auditResults.hidden = false;

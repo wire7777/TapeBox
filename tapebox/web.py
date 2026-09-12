@@ -8499,6 +8499,17 @@ def audit_tape_catalog_api():
                 "files",
                 [],
             ),
+            manifest=scan.get(
+                "manifest"
+            ),
+            manifest_present=scan.get(
+                "manifest_present",
+                False,
+            ),
+            manifest_error=scan.get(
+                "manifest_error"
+            ),
+            ltfs_uuid=loaded_uuid,
         )
 
         result["read_only_scan"] = True
