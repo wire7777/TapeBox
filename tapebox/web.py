@@ -87,6 +87,13 @@ from tapebox.tape import (
     format_ltfs,
 )
 
+from tapebox.updater import (
+    UpdateError,
+    check_for_updates,
+    read_state,
+    update_environment,
+)
+
 
 app = Flask(__name__)
 
@@ -6457,6 +6464,65 @@ def settings_create_directory_api():
                 "error": str(exc),
             }
         ), 400
+
+
+@app.route("/api/settings/update/status")
+def settings_update_status_api():
+    """
+    Return the installed TapeBox software/update state.
+
+    This endpoint is read-only. It does not fetch, install,
+    restart, roll back, or modify TapeBox.
+    """
+
+    try:
+        environment = update_environment()
+        state = read_state()
+
+        return jsonify(
+            {
+                "success": True,
+                "environment": environment,
+                "update_state": state,
+            }
+        )
+
+    except (OSError, ValueError, UpdateError) as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+
+@app.route(
+    "/api/settings/update/check",
+    methods=["POST"],
+)
+def settings_update_check_api():
+    """
+    Check GitHub for the latest stable TapeBox release.
+
+    This endpoint may fetch release metadata from GitHub,
+    but it does not modify the source tree, database, or
+    running TapeBox process.
+    """
+
+    try:
+        result = check_for_updates()
+
+        return jsonify(
+            result
+        )
+
+    except (OSError, ValueError, UpdateError) as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
 
 
 @app.route("/settings", methods=["GET", "POST"])
