@@ -379,6 +379,52 @@
         margin: 22px 0;
     ">
 
+    <h3>Rebuild Catalog From Tapes</h3>
+
+    <p style="opacity: 0.75;">
+        Recover the TapeBox catalog from cartridges if the
+        database backup is unavailable. Insert one TapeBox
+        cartridge at a time and scan it. TapeBox mounts the
+        cartridge read-only, validates its recovery metadata,
+        and merges its files into the catalog.
+    </p>
+
+    <p style="opacity: 0.75;">
+        Repeat this for every cartridge in the archive.
+        Existing matching records are kept and are not duplicated.
+    </p>
+
+    <div
+        style="
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        "
+    >
+        <button
+            type="button"
+            id="database-scan-tape-button"
+            class="action-button"
+        >
+            Scan Loaded Tape
+        </button>
+    </div>
+
+    <div
+        id="database-recovery-message"
+        style="
+            margin-top: 14px;
+            opacity: 0.9;
+        "
+    ></div>
+
+    <hr style="
+        border: 0;
+        border-top: 1px solid rgba(255,255,255,0.12);
+        margin: 22px 0;
+    ">
+
     <h3>Restore Database</h3>
 
     <p style="opacity: 0.75;">
@@ -563,6 +609,12 @@
 
     const databaseRepairButton =
         document.getElementById("database-repair-button");
+
+    const databaseScanTapeButton =
+        document.getElementById("database-scan-tape-button");
+
+    const databaseRecoveryMessage =
+        document.getElementById("database-recovery-message");
 
     const databaseHealthStatus =
         document.getElementById("database-health-status");
@@ -818,6 +870,71 @@
     }
 
 
+    async function scanLoadedTape() {
+        databaseScanTapeButton.disabled = true;
+
+        databaseRecoveryMessage.textContent =
+            "Scanning loaded TapeBox cartridge...";
+
+        try {
+            const response = await fetch(
+                "/api/settings/database/scan-loaded-tape",
+                {
+                    method: "POST",
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.error ||
+                    "Loaded tape scan failed."
+                );
+            }
+
+            const importedFiles =
+                Number(data.files_imported || 0);
+
+            const existingFiles =
+                Number(data.files_existing || 0);
+
+            const importedParts =
+                Number(data.spanned_parts_imported || 0);
+
+            const existingParts =
+                Number(data.spanned_parts_existing || 0);
+
+            databaseRecoveryMessage.textContent =
+                "Scanned "
+                + (data.label || data.volume_name || "loaded tape")
+                + ". "
+                + importedFiles
+                + " file"
+                + (importedFiles === 1 ? "" : "s")
+                + " imported, "
+                + existingFiles
+                + " already in catalog, "
+                + importedParts
+                + " spanned part"
+                + (importedParts === 1 ? "" : "s")
+                + " imported, "
+                + existingParts
+                + " already in catalog.";
+
+            await refreshDatabaseStatus();
+            await checkDatabaseHealth();
+
+        } catch (error) {
+            databaseRecoveryMessage.textContent =
+                error.message;
+
+        } finally {
+            databaseScanTapeButton.disabled = false;
+        }
+    }
+
+
     databaseCheckButton.addEventListener(
         "click",
         checkDatabaseHealth
@@ -826,6 +943,11 @@
     databaseRepairButton.addEventListener(
         "click",
         repairDatabase
+    );
+
+    databaseScanTapeButton.addEventListener(
+        "click",
+        scanLoadedTape
     );
 
 

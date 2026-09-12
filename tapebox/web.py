@@ -55,6 +55,10 @@ from tapebox.restore import (
     restore_selected_files,
 )
 
+from tapebox.recovery import (
+    import_loaded_tape,
+)
+
 from tapebox.archive import (
     archive_path,
     create_archive_selection_snapshot,
@@ -5943,6 +5947,115 @@ def settings_database_download_latest():
                 "error": str(exc),
             }
         ), 500
+
+
+@app.route(
+    "/api/settings/database/scan-loaded-tape",
+    methods=["POST"],
+)
+def settings_database_scan_loaded_tape_api():
+    """
+    Recover catalog records from the currently loaded TapeBox tape.
+
+    The cartridge is mounted read-only by the recovery engine.
+    This operation merges validated tape records into the catalog.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    operation_owner = "catalog-scan-loaded-tape"
+
+    #
+    # Reserve the physical tape drive before checking or mounting
+    # anything so Archive, Restore, Inspector, or another scan
+    # cannot touch the drive at the same time.
+    #
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Another tape operation is currently "
+                        "active. Wait for it to finish before "
+                        "scanning the loaded tape."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_TAPE_OPERATION_ID = (
+            operation_owner
+        )
+
+    try:
+        inspector_mount = Path(
+            "/mnt/tapebox/ltfs-inspect"
+        )
+
+        if _is_mounted(inspector_mount):
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "Tape Inspector is currently mounted. "
+                        "Unmount it before scanning the tape "
+                        "into the catalog."
+                    ),
+                }
+            ), 409
+
+        drives = discover_drives()
+
+        if not drives:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "No tape drive detected.",
+                }
+            ), 404
+
+        drive = drives[0]
+
+        sg_device = drive.get(
+            "sg_device"
+        )
+
+        if not sg_device:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Tape SCSI device could not be resolved."
+                    ),
+                }
+            ), 500
+
+        result = import_loaded_tape(
+            sg_device=sg_device
+        )
+
+        if not result.get("success"):
+            return jsonify(result), 400
+
+        return jsonify(result)
+
+    except Exception as exc:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    finally:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == operation_owner
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
 
 
 @app.route(
