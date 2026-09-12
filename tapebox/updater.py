@@ -1924,3 +1924,314 @@ def post_update_runtime_check(
         "health_checked": True,
         "health": health,
     }
+
+
+
+def perform_update(
+    *,
+    tag_name,
+    expected_version=None,
+    health_url="http://127.0.0.1:8080/",
+):
+    """
+    Execute a validated TapeBox software update.
+
+    IMPORTANT:
+        This function is intended to be run by the external TapeBox
+        updater helper, not by the Flask web process being updated.
+
+    Workflow:
+        1. validate/fetch exact release
+        2. create code + catalog rollback checkpoint
+        3. switch source to exact release commit
+        4. restart/validate runtime when systemd-managed
+        5. finalize success
+
+    Development mode intentionally stops at awaiting_manual_restart.
+
+    If installation or automatic runtime validation fails after the
+    checkpoint is created, the previous source and catalog are restored.
+    """
+
+    if not working_tree_clean():
+        raise UpdateError(
+            "TapeBox has uncommitted source changes. "
+            "Refusing to begin update."
+        )
+
+    candidate = fetch_and_validate_release(
+        tag_name=tag_name,
+        expected_version=expected_version,
+    )
+
+    checkpoint = prepare_update_checkpoint(
+        target_version=candidate[
+            "version"
+        ],
+        target_commit=candidate[
+            "commit"
+        ],
+    )
+
+    state = read_state()
+
+    if not isinstance(state, dict):
+        raise UpdateError(
+            "Update checkpoint was created but updater state "
+            "could not be loaded."
+        )
+
+    state.update(
+        {
+            "status": "installing",
+            "target_tag": candidate[
+                "tag_name"
+            ],
+            "target_version": candidate[
+                "version"
+            ],
+            "target_commit": candidate[
+                "commit"
+            ],
+            "install_started_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+        }
+    )
+
+    write_state(
+        state
+    )
+
+    source_switch_started = False
+
+    try:
+        source_switch_started = True
+
+        checkout_result = checkout_release_commit(
+            candidate[
+                "commit"
+            ]
+        )
+
+        state = read_state() or state
+
+        state.update(
+            {
+                "status": "source_installed",
+                "installed_commit": checkout_result[
+                    "installed_commit"
+                ],
+                "source_installed_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        )
+
+        write_state(
+            state
+        )
+
+        runtime_result = post_update_runtime_check(
+            health_url
+        )
+
+        #
+        # Development installations are controlled manually. Do not
+        # pretend the update is fully validated until the developer
+        # restarts Flask and performs the final validation.
+        #
+        if runtime_result.get(
+            "manual_restart_required"
+        ):
+            state = read_state() or state
+
+            state.update(
+                {
+                    "status": "awaiting_manual_restart",
+                    "manual_restart_required": True,
+                    "runtime_mode": "development",
+                    "health_checked": False,
+                }
+            )
+
+            write_state(
+                state
+            )
+
+            return {
+                "success": True,
+                "completed": False,
+                "status": "awaiting_manual_restart",
+                "candidate": candidate,
+                "checkpoint": checkpoint,
+                "checkout": checkout_result,
+                "runtime": runtime_result,
+            }
+
+        #
+        # systemd mode only reaches here after restart + HTTP health
+        # validation succeeds.
+        #
+        state = read_state() or state
+
+        state.update(
+            {
+                "status": "update_complete",
+                "manual_restart_required": False,
+                "health_checked": True,
+                "completed_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        )
+
+        write_state(
+            state
+        )
+
+        return {
+            "success": True,
+            "completed": True,
+            "status": "update_complete",
+            "candidate": candidate,
+            "checkpoint": checkpoint,
+            "checkout": checkout_result,
+            "runtime": runtime_result,
+        }
+
+    except Exception as exc:
+        #
+        # Once source switching has begun, the checkpoint is authoritative
+        # and rollback should be attempted automatically.
+        #
+        if source_switch_started:
+            try:
+                rollback_record = (
+                    read_state()
+                    or state
+                )
+
+                rollback_result = (
+                    rollback_update_checkpoint(
+                        rollback_record
+                    )
+                )
+
+                #
+                # On an installed/systemd runtime, bring the restored old
+                # version back online and validate it too.
+                #
+                restored_runtime = None
+
+                if (
+                    rollback_record.get(
+                        "runtime_mode"
+                    )
+                    == "systemd"
+                ):
+                    restart_result = restart_runtime()
+
+                    health_result = wait_for_http_health(
+                        health_url
+                    )
+
+                    restored_runtime = {
+                        "restart": restart_result,
+                        "health": health_result,
+                    }
+
+                failure_state = (
+                    read_state()
+                    or rollback_record
+                )
+
+                failure_state.update(
+                    {
+                        "status": "rolled_back",
+                        "update_error": str(
+                            exc
+                        ),
+                        "failed_target_tag": tag_name,
+                        "failed_target_version": (
+                            expected_version
+                        ),
+                    }
+                )
+
+                write_state(
+                    failure_state
+                )
+
+                raise UpdateError(
+                    "TapeBox update failed and was rolled back "
+                    f"successfully: {exc}"
+                ) from exc
+
+            except UpdateError as rollback_exc:
+                #
+                # Preserve a successful rollback result. The UpdateError
+                # above intentionally reports the failed update.
+                #
+                if (
+                    "rolled back successfully"
+                    in str(rollback_exc)
+                ):
+                    raise
+
+                failure_state = (
+                    read_state()
+                    or state
+                )
+
+                failure_state.update(
+                    {
+                        "status": "rollback_failed",
+                        "update_error": str(
+                            exc
+                        ),
+                        "rollback_error": str(
+                            rollback_exc
+                        ),
+                    }
+                )
+
+                write_state(
+                    failure_state
+                )
+
+                raise UpdateError(
+                    "TapeBox update failed and automatic rollback "
+                    f"also failed. Update error: {exc}. "
+                    f"Rollback error: {rollback_exc}"
+                ) from rollback_exc
+
+            except Exception as rollback_exc:
+                failure_state = (
+                    read_state()
+                    or state
+                )
+
+                failure_state.update(
+                    {
+                        "status": "rollback_failed",
+                        "update_error": str(
+                            exc
+                        ),
+                        "rollback_error": str(
+                            rollback_exc
+                        ),
+                    }
+                )
+
+                write_state(
+                    failure_state
+                )
+
+                raise UpdateError(
+                    "TapeBox update failed and automatic rollback "
+                    f"also failed. Update error: {exc}. "
+                    f"Rollback error: {rollback_exc}"
+                ) from rollback_exc
+
+        raise
