@@ -2235,3 +2235,202 @@ def perform_update(
                 ) from rollback_exc
 
         raise
+
+
+
+def complete_manual_update(
+    health_url="http://127.0.0.1:8080/",
+):
+    """
+    Complete an update that is waiting for a manual development restart.
+
+    This is intended for development-mode installations where the Flask
+    process is controlled manually.
+
+    Validation:
+        1. updater state must be awaiting_manual_restart
+        2. current Git commit must match target_commit
+        3. HTTP health check must succeed
+        4. live catalog database must validate
+        5. mark update complete
+
+    If validation fails, restore source + catalog from the saved rollback
+    checkpoint.
+    """
+
+    state = read_state()
+
+    if not isinstance(state, dict):
+        raise UpdateError(
+            "No TapeBox update state is available."
+        )
+
+    if state.get(
+        "status"
+    ) != "awaiting_manual_restart":
+        raise UpdateError(
+            "TapeBox is not waiting for a manual update restart. "
+            f"Current state: {state.get('status')}"
+        )
+
+    if state.get(
+        "runtime_mode"
+    ) != "development":
+        raise UpdateError(
+            "Manual update completion is only valid in "
+            "development runtime mode."
+        )
+
+    target_commit = str(
+        state.get(
+            "target_commit"
+        )
+        or ""
+    ).strip()
+
+    if not target_commit:
+        raise UpdateError(
+            "Update state is missing target_commit."
+        )
+
+    try:
+        current_commit = get_current_commit()
+
+        if current_commit != target_commit:
+            raise UpdateError(
+                "TapeBox source does not match the expected "
+                "updated commit. "
+                f"Expected {target_commit}, found {current_commit}."
+            )
+
+        health = wait_for_http_health(
+            health_url,
+            attempts=5,
+            delay_seconds=1,
+            timeout=5,
+        )
+
+        #
+        # Validate the actual live database after restart.
+        #
+        live_catalog = Path(
+            "/var/lib/tapebox/catalog.db"
+        )
+
+        catalog_validation = (
+            validate_catalog_database(
+                live_catalog
+            )
+        )
+
+        if not catalog_validation.get(
+            "success"
+        ):
+            raise UpdateError(
+                "Updated TapeBox catalog failed validation: "
+                + catalog_validation.get(
+                    "error",
+                    "unknown validation error",
+                )
+            )
+
+        state.update(
+            {
+                "status": "update_complete",
+                "manual_restart_required": False,
+                "health_checked": True,
+                "health": health,
+                "catalog_validation_after_update": {
+                    "success": True,
+                    "tapes": catalog_validation.get(
+                        "tapes"
+                    ),
+                    "files": catalog_validation.get(
+                        "files"
+                    ),
+                },
+                "completed_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        )
+
+        write_state(
+            state
+        )
+
+        return {
+            "success": True,
+            "completed": True,
+            "status": "update_complete",
+            "current_commit": current_commit,
+            "target_commit": target_commit,
+            "health": health,
+            "catalog_validation": state[
+                "catalog_validation_after_update"
+            ],
+        }
+
+    except Exception as exc:
+        rollback_record = (
+            read_state()
+            or state
+        )
+
+        try:
+            rollback_result = (
+                rollback_update_checkpoint(
+                    rollback_record
+                )
+            )
+
+        except Exception as rollback_exc:
+            failure_state = (
+                read_state()
+                or rollback_record
+            )
+
+            failure_state.update(
+                {
+                    "status": "rollback_failed",
+                    "manual_completion_error": str(
+                        exc
+                    ),
+                    "rollback_error": str(
+                        rollback_exc
+                    ),
+                }
+            )
+
+            write_state(
+                failure_state
+            )
+
+            raise UpdateError(
+                "Manual update validation failed and rollback "
+                f"also failed. Validation error: {exc}. "
+                f"Rollback error: {rollback_exc}"
+            ) from rollback_exc
+
+        failure_state = (
+            read_state()
+            or rollback_record
+        )
+
+        failure_state.update(
+            {
+                "status": "rolled_back",
+                "manual_completion_error": str(
+                    exc
+                ),
+            }
+        )
+
+        write_state(
+            failure_state
+        )
+
+        raise UpdateError(
+            "Manual update validation failed and TapeBox "
+            f"was rolled back successfully: {exc}"
+        ) from exc
