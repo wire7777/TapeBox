@@ -491,7 +491,53 @@ Job #{{ job["id"] }} · TapeBox
     </div>
 
 
-    {% if files %}
+    <div
+        style="
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        "
+    >
+        <strong>Location:</strong>
+
+        <span class="path">
+            /
+            {% if current_path %}
+                {{ current_path }}
+            {% endif %}
+        </span>
+
+        {% if current_path %}
+
+        <a
+            class="button"
+            href="{{ url_for(
+                'job_detail_page',
+                job_id=job['id']
+            ) }}"
+        >
+            Root
+        </a>
+
+        <a
+            class="button"
+            href="{{ url_for(
+                'job_detail_page',
+                job_id=job['id'],
+                path=parent_path
+            ) }}"
+        >
+            ↑ Parent Folder
+        </a>
+
+        {% endif %}
+
+    </div>
+
+
+    {% if job_rows %}
 
     <div class="table-wrap">
 
@@ -500,9 +546,11 @@ Job #{{ job["id"] }} · TapeBox
         <thead>
 
         <tr>
-            <th>File</th>
-            <th>Path</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Files</th>
             <th>Size</th>
+            <th>Path</th>
             <th>Storage</th>
             <th>Cartridge</th>
         </tr>
@@ -511,64 +559,134 @@ Job #{{ job["id"] }} · TapeBox
 
         <tbody>
 
-        {% for file in files %}
+        {% for row in job_rows %}
 
-        <tr>
+            {% if row["type"] == "directory" %}
 
-            <td class="strong">
-                {{ file["filename"] | file_icon }} {{ file["filename"] }}
-            </td>
+            <tr>
 
-            <td class="path">
-                {{ file["relative_path"] }}
-            </td>
+                <td class="strong">
 
-            <td>
-                {{ file["size_bytes"] | format_bytes }}
-            </td>
+                    <a
+                        href="{{ url_for(
+                            'job_detail_page',
+                            job_id=job['id'],
+                            path=row['path']
+                        ) }}"
+                    >
+                        📁 {{ row["name"] }}
+                    </a>
 
-            <td>
+                </td>
 
-                {% if file["is_spanned"] %}
+                <td>
+                    <span class="badge">
+                        FOLDER
+                    </span>
+                </td>
 
-                <span class="storage-badge spanned">
-                    SPANNED
-                </span>
+                <td>
+                    {{ row["file_count"] }}
+                </td>
 
-                {% else %}
+                <td>
+                    {{
+                        row["size_bytes"]
+                        | format_bytes
+                    }}
+                </td>
 
-                <span class="storage-badge">
-                    SINGLE TAPE
-                </span>
+                <td class="path">
+                    {{ row["path"] }}
+                </td>
 
-                {% endif %}
+                <td>—</td>
+                <td>—</td>
 
-            </td>
-
-            <td>
-
-            {% if file["is_spanned"] %}
-
-                {% for part in file["parts"] %}
-
-                <span class="tape-badge">
-                    {{ part["tape_label"] }}
-                    · P{{ part["part_number"] }}
-                </span>
-
-                {% endfor %}
+            </tr>
 
             {% else %}
 
-                <span class="tape-badge">
-                    {{ file["tape_label"] or "Unknown" }}
-                </span>
+            {% set file = row["file"] %}
+
+            <tr>
+
+                <td class="strong">
+                    {{
+                        file["filename"]
+                        | file_icon
+                    }}
+                    {{ file["filename"] }}
+                </td>
+
+                <td>
+                    <span class="badge">
+                        FILE
+                    </span>
+                </td>
+
+                <td>—</td>
+
+                <td>
+                    {{
+                        file["size_bytes"]
+                        | format_bytes
+                    }}
+                </td>
+
+                <td class="path">
+                    {{ file["relative_path"] }}
+                </td>
+
+                <td>
+
+                    {% if file["is_spanned"] %}
+
+                    <span
+                        class="storage-badge spanned"
+                    >
+                        SPANNED
+                    </span>
+
+                    {% else %}
+
+                    <span class="storage-badge">
+                        SINGLE TAPE
+                    </span>
+
+                    {% endif %}
+
+                </td>
+
+                <td>
+
+                    {% if file["is_spanned"] %}
+
+                        {% for part in file["parts"] %}
+
+                        <span class="tape-badge">
+                            {{ part["tape_label"] }}
+                            · P{{ part["part_number"] }}
+                        </span>
+
+                        {% endfor %}
+
+                    {% else %}
+
+                    <span class="tape-badge">
+                        {{
+                            file["tape_label"]
+                            or "Unknown"
+                        }}
+                    </span>
+
+                    {% endif %}
+
+                </td>
+
+            </tr>
 
             {% endif %}
-
-            </td>
-
-        </tr>
 
         {% endfor %}
 
@@ -581,7 +699,7 @@ Job #{{ job["id"] }} · TapeBox
     {% else %}
 
     <div class="empty">
-        No completed files recorded for this job.
+        No completed files recorded in this folder.
     </div>
 
     {% endif %}

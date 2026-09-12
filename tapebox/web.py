@@ -1168,6 +1168,35 @@ def job_detail_page(job_id):
     files = plan["files"]
     tapes = plan["tapes"]
 
+    #
+    # Build a virtual folder view for the logical files in
+    # this archive job. This uses only the restore-plan/catalog
+    # data already loaded above and performs no tape access.
+    #
+    requested_path = request.args.get(
+        "path",
+        "",
+    ).strip().strip("/")
+
+    folder_view = _build_catalog_folder_view(
+        files,
+        requested_path,
+    )
+
+    job_rows = []
+
+    job_rows.extend(
+        folder_view["folders"]
+    )
+
+    for file_row in folder_view["files"]:
+        job_rows.append(
+            {
+                "type": "file",
+                "file": file_row,
+            }
+        )
+
     last_restore = LAST_RESTORE_RESULTS.get(
         job_id
     )
@@ -1177,6 +1206,19 @@ def job_detail_page(job_id):
         active_page="jobs",
         job=job,
         files=files,
+        job_rows=job_rows,
+        current_path=folder_view[
+            "current_path"
+        ],
+        parent_path=folder_view[
+            "parent_path"
+        ],
+        folder_count=folder_view[
+            "folder_count"
+        ],
+        file_count=folder_view[
+            "file_count"
+        ],
         tapes=tapes,
         last_restore=last_restore,
         default_destination=get_setting(
@@ -2102,6 +2144,35 @@ def tape_detail_page(tape_id):
         )
 
     #
+    # Build the same virtual catalog folder browser used by
+    # the main Files page. This is database-only and does not
+    # access the physical cartridge.
+    #
+    requested_path = request.args.get(
+        "path",
+        "",
+    ).strip().strip("/")
+
+    folder_view = _build_catalog_folder_view(
+        normal_files,
+        requested_path,
+    )
+
+    tape_rows = []
+
+    tape_rows.extend(
+        folder_view["folders"]
+    )
+
+    for file_row in folder_view["files"]:
+        tape_rows.append(
+            {
+                "type": "file",
+                "file": file_row,
+            }
+        )
+
+    #
     # Also find physical parts belonging to spanned logical files.
     #
     spanned_parts = []
@@ -2159,6 +2230,19 @@ def tape_detail_page(tape_id):
         active_page="tapes",
         tape=tape,
         normal_files=normal_files,
+        tape_rows=tape_rows,
+        current_path=folder_view[
+            "current_path"
+        ],
+        parent_path=folder_view[
+            "parent_path"
+        ],
+        folder_count=folder_view[
+            "folder_count"
+        ],
+        file_count=folder_view[
+            "file_count"
+        ],
         spanned_parts=spanned_parts,
     )
 
@@ -2733,6 +2817,162 @@ def files_restore_start_api():
     )
 
 
+def _build_catalog_folder_view(
+    file_rows,
+    requested_path="",
+):
+    """
+    Build a virtual folder view from catalog relative_path values.
+
+    This operates entirely on catalog rows already supplied by the
+    caller. It does not mount, inspect, or otherwise access an LTFS
+    cartridge.
+    """
+    requested_path = str(
+        requested_path or ""
+    ).strip().strip("/")
+
+    current_parts = tuple(
+        part
+        for part in requested_path.split("/")
+        if part
+    )
+
+    current_path = "/".join(
+        current_parts
+    )
+
+    parent_path = None
+
+    if current_parts:
+        parent_path = "/".join(
+            current_parts[:-1]
+        )
+
+    folders = {}
+    visible_files = []
+
+    prefix_length = len(current_parts)
+
+    for file_row in file_rows:
+        row_keys = file_row.keys()
+
+        relative_path = str(
+            (
+                file_row["relative_path"]
+                if "relative_path" in row_keys
+                else None
+            )
+            or (
+                file_row["filename"]
+                if "filename" in row_keys
+                else None
+            )
+            or ""
+        ).strip("/")
+
+        parts = tuple(
+            part
+            for part in relative_path.split("/")
+            if part
+        )
+
+        if not parts:
+            continue
+
+        if (
+            len(parts) <= prefix_length
+            or parts[:prefix_length]
+            != current_parts
+        ):
+            continue
+
+        remainder = parts[prefix_length:]
+
+        if len(remainder) > 1:
+            folder_name = remainder[0]
+
+            folder_path = "/".join(
+                current_parts
+                + (folder_name,)
+            )
+
+            folder = folders.setdefault(
+                folder_name,
+                {
+                    "type": "directory",
+                    "name": folder_name,
+                    "path": folder_path,
+                    "size_bytes": 0,
+                    "file_count": 0,
+                    "file_ids": [],
+                },
+            )
+
+            folder["size_bytes"] += int(
+                (
+                    file_row["size_bytes"]
+                    if "size_bytes" in row_keys
+                    else 0
+                )
+                or 0
+            )
+
+            folder["file_count"] += 1
+
+            file_id = (
+                file_row["id"]
+                if "id" in row_keys
+                else None
+            )
+
+            if file_id is not None:
+                file_id = int(file_id)
+
+                if (
+                    file_id
+                    not in folder["file_ids"]
+                ):
+                    folder["file_ids"].append(
+                        file_id
+                    )
+
+            continue
+
+        visible_files.append(file_row)
+
+    folder_rows = sorted(
+        folders.values(),
+        key=lambda item:
+            item["name"].casefold(),
+    )
+
+    visible_files = sorted(
+        visible_files,
+        key=lambda item: (
+            str(
+                item["filename"]
+                if "filename" in item.keys()
+                else ""
+            ).casefold(),
+            int(
+                item["id"]
+                if "id" in item.keys()
+                else 0
+            ),
+        ),
+    )
+
+    return {
+        "current_path": current_path,
+        "parent_path": parent_path,
+        "folders": folder_rows,
+        "files": visible_files,
+        "folder_count": len(folder_rows),
+        "file_count": len(visible_files),
+    }
+
+
 @app.route("/files")
 def files_page():
     initialize_database()
@@ -2822,101 +3062,18 @@ def files_page():
     #
     files = list_files()
 
-    current_parts = tuple(
-        part
-        for part in requested_path.split("/")
-        if part
+    folder_view = _build_catalog_folder_view(
+        files,
+        requested_path,
     )
-
-    current_path = "/".join(current_parts)
-
-    parent_path = None
-
-    if current_parts:
-        parent_path = "/".join(
-            current_parts[:-1]
-        )
-
-    folders = {}
-    visible_files = []
-
-    prefix_length = len(current_parts)
-
-    for file_row in files:
-        relative_path = str(
-            file_row["relative_path"] or ""
-        ).strip("/")
-
-        parts = tuple(
-            part
-            for part in relative_path.split("/")
-            if part
-        )
-
-        if not parts:
-            continue
-
-        #
-        # File must live underneath the requested virtual
-        # directory.
-        #
-        if (
-            len(parts) <= prefix_length
-            or parts[:prefix_length] != current_parts
-        ):
-            continue
-
-        remainder = parts[prefix_length:]
-
-        if len(remainder) > 1:
-            folder_name = remainder[0]
-
-            folder_path = "/".join(
-                current_parts + (folder_name,)
-            )
-
-            folder = folders.setdefault(
-                folder_name,
-                {
-                    "type": "directory",
-                    "name": folder_name,
-                    "path": folder_path,
-                    "size_bytes": 0,
-                    "file_count": 0,
-                    "file_ids": [],
-                },
-            )
-
-            folder["size_bytes"] += int(
-                file_row["size_bytes"] or 0
-            )
-
-            folder["file_count"] += 1
-            folder["file_ids"].append(
-                int(file_row["id"])
-            )
-
-            continue
-
-        visible_files.append(file_row)
 
     rows = []
 
-    for folder in sorted(
-        folders.values(),
-        key=lambda item: item["name"].casefold(),
-    ):
-        rows.append(folder)
+    rows.extend(
+        folder_view["folders"]
+    )
 
-    for file_row in sorted(
-        visible_files,
-        key=lambda item: (
-            str(
-                item["filename"] or ""
-            ).casefold(),
-            int(item["id"]),
-        ),
-    ):
+    for file_row in folder_view["files"]:
         required_tapes = []
 
         if file_row["is_spanned"]:
@@ -2932,8 +3089,9 @@ def files_page():
                 )
 
                 if label not in required_tapes:
-                    required_tapes.append(label)
-
+                    required_tapes.append(
+                        label
+                    )
         else:
             label = (
                 file_row["tape_label"]
@@ -2942,7 +3100,9 @@ def files_page():
             )
 
             if label != "-":
-                required_tapes.append(label)
+                required_tapes.append(
+                    label
+                )
 
         rows.append(
             {
@@ -2965,11 +3125,19 @@ def files_page():
         "files.html",
         active_page="files",
         query="",
-        current_path=current_path,
-        parent_path=parent_path,
+        current_path=folder_view[
+            "current_path"
+        ],
+        parent_path=folder_view[
+            "parent_path"
+        ],
         rows=rows,
-        folder_count=len(folders),
-        file_count=len(visible_files),
+        folder_count=folder_view[
+            "folder_count"
+        ],
+        file_count=folder_view[
+            "file_count"
+        ],
     )
 
 

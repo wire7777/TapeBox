@@ -203,20 +203,67 @@
     <div class="card-header">
         <div>
             <h2>Files on Cartridge</h2>
-            <p>Normal files stored directly on this tape</p>
+            <p>
+                Catalog folders and files stored on this tape
+            </p>
         </div>
     </div>
 
-    {% if normal_files %}
+    <div
+        style="
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        "
+    >
+        <strong>Location:</strong>
+
+        <span class="path">
+            /
+            {% if current_path %}
+                {{ current_path }}
+            {% endif %}
+        </span>
+
+        {% if current_path %}
+        <a
+            class="button"
+            href="{{ url_for(
+                'tape_detail_page',
+                tape_id=tape['id']
+            ) }}"
+        >
+            Root
+        </a>
+
+        <a
+            class="button"
+            href="{{ url_for(
+                'tape_detail_page',
+                tape_id=tape['id'],
+                path=parent_path
+            ) }}"
+        >
+            ↑ Parent Folder
+        </a>
+        {% endif %}
+    </div>
+
+    {% if tape_rows %}
 
     <div class="table-wrap">
+
         <table>
 
             <thead>
             <tr>
-                <th>File</th>
-                <th>Path</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Files</th>
                 <th>Size</th>
+                <th>Path</th>
                 <th>Original Created</th>
                 <th>Original Modified</th>
                 <th>Archived</th>
@@ -225,45 +272,118 @@
 
             <tbody>
 
-            {% for file in normal_files %}
+            {% for row in tape_rows %}
 
-            <tr>
-                <td class="strong">
-                    {{ file["filename"] | file_icon }} {{ file["filename"] }}
-                </td>
+                {% if row["type"] == "directory" %}
 
-                <td class="path">
-                    {{ file["relative_path"] }}
-                </td>
+                <tr>
+                    <td class="strong">
+                        <a
+                            href="{{ url_for(
+                                'tape_detail_page',
+                                tape_id=tape['id'],
+                                path=row['path']
+                            ) }}"
+                        >
+                            📁 {{ row["name"] }}
+                        </a>
+                    </td>
 
-                <td>
-                    {{ file["size_bytes"] | format_bytes }}
-                </td>
+                    <td>
+                        <span class="badge">
+                            FOLDER
+                        </span>
+                    </td>
 
-                <td style="white-space: nowrap;">
-                    {{ file["original_created_display"] }}
-                </td>
+                    <td>
+                        {{ row["file_count"] }}
+                    </td>
 
-                <td style="white-space: nowrap;">
-                    {{ file["original_modified_display"] }}
-                </td>
+                    <td>
+                        {{
+                            row["size_bytes"]
+                            | format_bytes
+                        }}
+                    </td>
 
-                <td style="white-space: nowrap;">
-                    {{ file["archived_display"] }}
-                </td>
-            </tr>
+                    <td class="path">
+                        {{ row["path"] }}
+                    </td>
+
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                </tr>
+
+                {% else %}
+
+                {% set file = row["file"] %}
+
+                <tr>
+                    <td class="strong">
+                        {{
+                            file["filename"]
+                            | file_icon
+                        }}
+                        {{ file["filename"] }}
+                    </td>
+
+                    <td>
+                        <span class="badge">
+                            FILE
+                        </span>
+                    </td>
+
+                    <td>—</td>
+
+                    <td>
+                        {{
+                            file["size_bytes"]
+                            | format_bytes
+                        }}
+                    </td>
+
+                    <td class="path">
+                        {{ file["relative_path"] }}
+                    </td>
+
+                    <td style="white-space: nowrap;">
+                        {{
+                            file[
+                                "original_created_display"
+                            ]
+                        }}
+                    </td>
+
+                    <td style="white-space: nowrap;">
+                        {{
+                            file[
+                                "original_modified_display"
+                            ]
+                        }}
+                    </td>
+
+                    <td style="white-space: nowrap;">
+                        {{
+                            file["archived_display"]
+                        }}
+                    </td>
+                </tr>
+
+                {% endif %}
 
             {% endfor %}
 
             </tbody>
 
         </table>
+
     </div>
 
     {% else %}
 
     <div class="empty">
-        No normal files stored on this cartridge.
+        No files in this folder.
     </div>
 
     {% endif %}
