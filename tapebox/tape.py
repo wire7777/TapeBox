@@ -2,6 +2,7 @@ import re
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -1351,3 +1352,197 @@ def format_ltfs(
         command,
         timeout=timeout,
     )
+
+
+def scan_ltfs_files(
+    sg_device="/dev/sg0",
+    mountpoint="/mnt/tapebox/ltfs-import-existing",
+):
+    """
+    Read-only scan of the physical files on an existing LTFS tape.
+
+    This does not modify the cartridge or the TapeBox catalog.
+    TapeBox private metadata under /.tapebox is intentionally
+    excluded from the returned file list.
+    """
+
+    mount_path = Path(mountpoint)
+
+    result = {
+        "success": False,
+        "label": None,
+        "uuid": None,
+        "files": [],
+        "file_count": 0,
+        "total_bytes": 0,
+        "error": None,
+    }
+
+    if not sg_device:
+        result["error"] = "No SCSI generic device"
+        return result
+
+    if not Path(sg_device).exists():
+        result["error"] = (
+            f"Device does not exist: {sg_device}"
+        )
+        return result
+
+    try:
+        mount_path.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+    except OSError as exc:
+        result["error"] = str(exc)
+        return result
+
+    if _is_mounted(mount_path):
+        result["error"] = (
+            "LTFS import scan mount point is already mounted: "
+            f"{mount_path}"
+        )
+        return result
+
+    mount_result = mount_ltfs(
+        sg_device,
+        mount_path,
+        read_only=True,
+        timeout=120,
+    )
+
+    if not _is_mounted(mount_path):
+        result["error"] = (
+            mount_result.get("stderr")
+            or mount_result.get("stdout")
+            or "LTFS mount failed"
+        )
+        return result
+
+    scan_error = None
+
+    try:
+        result["uuid"] = get_ltfs_virtual_attribute(
+            mount_path,
+            "ltfs.volumeUUID",
+        )
+
+        result["label"] = get_ltfs_virtual_attribute(
+            mount_path,
+            "ltfs.volumeName",
+        )
+
+        if not result["uuid"]:
+            raise RuntimeError(
+                "LTFS cartridge UUID could not be read."
+            )
+
+        if not result["label"]:
+            raise RuntimeError(
+                "LTFS cartridge label could not be read."
+            )
+
+        files = []
+        total_bytes = 0
+
+        for path in mount_path.rglob("*"):
+            try:
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                ):
+                    continue
+
+                relative = path.relative_to(
+                    mount_path
+                )
+
+                parts = relative.parts
+
+                if (
+                    parts
+                    and parts[0] == ".tapebox"
+                ):
+                    continue
+
+                stat_result = path.stat()
+
+                relative_posix = relative.as_posix()
+
+                tape_path = "/" + relative_posix
+
+                parent = relative.parent.as_posix()
+
+                if parent == ".":
+                    relative_path = relative.name
+                else:
+                    relative_path = relative_posix
+
+                modified_at = None
+
+                try:
+                    modified_at = (
+                        datetime.fromtimestamp(
+                            stat_result.st_mtime,
+                            tz=timezone.utc,
+                        ).isoformat()
+                    )
+                except (
+                    OSError,
+                    OverflowError,
+                    ValueError,
+                ):
+                    modified_at = None
+
+                size_bytes = int(
+                    stat_result.st_size
+                )
+
+                files.append(
+                    {
+                        "filename": path.name,
+                        "relative_path": (
+                            relative_path
+                        ),
+                        "tape_path": tape_path,
+                        "size_bytes": size_bytes,
+                        "modified_at": modified_at,
+                    }
+                )
+
+                total_bytes += size_bytes
+
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Could not inspect {path}: {exc}"
+                ) from exc
+
+        files.sort(
+            key=lambda item: item["tape_path"]
+        )
+
+        result["files"] = files
+        result["file_count"] = len(files)
+        result["total_bytes"] = total_bytes
+
+    except Exception as exc:
+        scan_error = str(exc)
+
+    success, unmount_error = _unmount_ltfs(
+        mount_path
+    )
+
+    if not success:
+        result["error"] = (
+            "LTFS scan completed, but automatic "
+            "unmount failed: "
+            f"{unmount_error}"
+        )
+        return result
+
+    if scan_error:
+        result["error"] = scan_error
+        return result
+
+    result["success"] = True
+    return result

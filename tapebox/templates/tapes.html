@@ -2,6 +2,9 @@
 
 {% block title %}
 Tapes · TapeBox
+
+
+
 {% endblock %}
 
 {% block content %}
@@ -50,6 +53,7 @@ Tapes · TapeBox
                 <th>Capacity</th>
                 <th>Location</th>
                 <th>LTFS UUID</th>
+                <th>Actions</th>
             </tr>
             </thead>
 
@@ -122,6 +126,18 @@ Tapes · TapeBox
 
                 <td class="mono">
                     {{ tape["ltfs_uuid"] or "-" }}
+                </td>
+
+                <td>
+                    <button
+                        type="button"
+                        class="action-button remove-tape-catalog-button"
+                        data-tape-id="{{ tape['id'] }}"
+                        data-tape-label="{{ tape['label'] }}"
+                        onclick="event.stopPropagation();"
+                    >
+                        Remove
+                    </button>
                 </td>
 
             </tr>
@@ -340,6 +356,140 @@ Tapes · TapeBox
                 hidden
             >
                 Add to Catalog
+            </button>
+
+            <button
+                type="button"
+                id="import-existing-files-button"
+                class="action-button"
+                hidden
+            >
+                Import Files
+            </button>
+
+        </div>
+
+    </div>
+</div>
+
+
+<div
+    id="remove-tape-modal"
+    class="tapebox-modal"
+    hidden
+>
+    <div class="tapebox-modal-panel">
+
+        <div class="tapebox-modal-header">
+            <div>
+                <h2>Remove Tape from Catalog</h2>
+                <p>
+                    Remove this cartridge and its cataloged
+                    file records from TapeBox.
+                </p>
+            </div>
+
+            <button
+                type="button"
+                id="remove-tape-close"
+                class="tapebox-modal-close"
+                aria-label="Close"
+            >
+                ×
+            </button>
+        </div>
+
+        <div class="tapebox-modal-body">
+
+            <div
+                class="tapebox-modal-message error"
+            >
+                <strong>
+                    This removes catalog records only.
+                </strong>
+
+                <div style="margin-top: 8px;">
+                    The physical LTFS cartridge will NOT
+                    be modified, erased, mounted, or written.
+                </div>
+
+                <div style="margin-top: 8px;">
+                    If this tape contains part of a spanned
+                    logical file, the entire logical file
+                    record will also be removed from the
+                    TapeBox catalog.
+                </div>
+            </div>
+
+            <div
+                style="
+                    margin-top: 18px;
+                    display: grid;
+                    gap: 12px;
+                "
+            >
+                <div>
+                    <div class="subtext">
+                        Tape
+                    </div>
+
+                    <div
+                        id="remove-tape-label"
+                        class="strong"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div>
+                    <label
+                        for="remove-tape-confirmation"
+                        class="subtext"
+                    >
+                        Confirmation
+                    </label>
+
+                    <input
+                        type="text"
+                        id="remove-tape-confirmation"
+                        autocomplete="off"
+                    >
+
+                    <div
+                        id="remove-tape-confirm-help"
+                        class="subtext"
+                        style="margin-top: 6px;"
+                    >
+                        -
+                    </div>
+                </div>
+
+                <div
+                    id="remove-tape-message"
+                    class="tapebox-modal-message"
+                    hidden
+                ></div>
+            </div>
+
+        </div>
+
+        <div class="tapebox-modal-actions">
+
+            <button
+                type="button"
+                id="remove-tape-cancel"
+                class="action-button"
+            >
+                Cancel
+            </button>
+
+            <button
+                type="button"
+                id="remove-tape-confirm-button"
+                class="action-button"
+                disabled
+            >
+                Remove from Catalog
             </button>
 
         </div>
@@ -610,6 +760,11 @@ Tapes · TapeBox
             "register-existing-button"
         );
 
+    const importButton =
+        document.getElementById(
+            "import-existing-files-button"
+        );
+
     const message =
         document.getElementById(
             "existing-tape-message"
@@ -677,6 +832,11 @@ Tapes · TapeBox
         form.hidden = false;
 
         registerButton.hidden = true;
+        registerButton.disabled = false;
+
+        importButton.hidden = true;
+        importButton.disabled = false;
+
         inspectButton.hidden = false;
         inspectButton.disabled = false;
 
@@ -848,11 +1008,13 @@ Tapes · TapeBox
                         + ".";
 
                     registerButton.hidden = true;
+                    importButton.hidden = false;
 
                 } else {
                     already.hidden = true;
                     form.hidden = false;
                     registerButton.hidden = false;
+                    importButton.hidden = true;
 
                     document.getElementById(
                         "existing-friendly-name"
@@ -949,14 +1111,19 @@ Tapes · TapeBox
                     || "Cartridge added.";
 
                 registerButton.hidden = true;
-                inspectButton.hidden = true;
+                registerButton.disabled = false;
 
-                window.setTimeout(
-                    () => {
-                        window.location.reload();
-                    },
-                    900
-                );
+                form.hidden = true;
+
+                already.hidden = false;
+                already.textContent =
+                    "This cartridge is registered "
+                    + "in the TapeBox catalog.";
+
+                importButton.hidden = false;
+                importButton.disabled = false;
+
+                inspectButton.hidden = false;
 
             } catch (error) {
                 message.className =
@@ -965,6 +1132,127 @@ Tapes · TapeBox
                 message.textContent =
                     error.message;
 
+                registerButton.disabled = false;
+            }
+        }
+    );
+
+
+    importButton.addEventListener(
+        "click",
+        async () => {
+            if (
+                !cartridge
+                || !cartridge.uuid
+            ) {
+                return;
+            }
+
+            importButton.disabled = true;
+            inspectButton.disabled = true;
+            registerButton.disabled = true;
+
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Scanning physical LTFS files "
+                + "read-only...";
+
+            try {
+                const response = await fetch(
+                    "/api/tapes/import-existing-files",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+
+                        body: JSON.stringify(
+                            {
+                                uuid:
+                                    cartridge.uuid,
+                            }
+                        ),
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    if (
+                        data.conflict_count
+                        && data.conflicts
+                    ) {
+                        const first =
+                            data.conflicts[0];
+
+                        throw new Error(
+                            data.error
+                            + " First conflict: "
+                            + first.tape_path
+                            + " (catalog "
+                            + formatBytes(
+                                first.catalog_size_bytes
+                            )
+                            + ", tape "
+                            + formatBytes(
+                                first.physical_size_bytes
+                            )
+                            + ")."
+                        );
+                    }
+
+                    throw new Error(
+                        data.error
+                        || "File import failed."
+                    );
+                }
+
+                message.className =
+                    "tapebox-modal-message success";
+
+                message.textContent =
+                    "Scanned "
+                    + data.files_scanned
+                    + " physical file"
+                    + (
+                        data.files_scanned === 1
+                        ? ""
+                        : "s"
+                    )
+                    + ". "
+                    + data.files_imported
+                    + " imported, "
+                    + data.files_existing
+                    + " already in catalog.";
+
+                already.hidden = false;
+
+                already.textContent =
+                    "Import completed read-only. "
+                    + "The LTFS cartridge was not "
+                    + "modified.";
+
+                importButton.textContent =
+                    "Scan Again";
+
+            } catch (error) {
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+            } finally {
+                importButton.disabled = false;
+                inspectButton.disabled = false;
                 registerButton.disabled = false;
             }
         }
@@ -1461,6 +1749,320 @@ Tapes · TapeBox
                 closeButton.disabled = false;
 
                 labelInput.disabled = false;
+                confirmationInput.disabled = false;
+
+                updateConfirmation();
+            }
+        }
+    );
+})();
+</script>
+
+<script>
+(() => {
+    const modal =
+        document.getElementById(
+            "remove-tape-modal"
+        );
+
+    const closeButton =
+        document.getElementById(
+            "remove-tape-close"
+        );
+
+    const cancelButton =
+        document.getElementById(
+            "remove-tape-cancel"
+        );
+
+    const confirmButton =
+        document.getElementById(
+            "remove-tape-confirm-button"
+        );
+
+    const confirmationInput =
+        document.getElementById(
+            "remove-tape-confirmation"
+        );
+
+    const labelDisplay =
+        document.getElementById(
+            "remove-tape-label"
+        );
+
+    const confirmHelp =
+        document.getElementById(
+            "remove-tape-confirm-help"
+        );
+
+    const message =
+        document.getElementById(
+            "remove-tape-message"
+        );
+
+    let tapeId = null;
+    let tapeLabel = "";
+    let removing = false;
+
+
+    function expectedConfirmation() {
+        if (!tapeLabel) {
+            return "";
+        }
+
+        return "REMOVE " + tapeLabel;
+    }
+
+
+    function updateConfirmation() {
+        const expected =
+            expectedConfirmation();
+
+        confirmHelp.textContent =
+            expected
+                ? "Type exactly: " + expected
+                : "-";
+
+        confirmButton.disabled =
+            (
+                removing
+                || !expected
+                || confirmationInput
+                    .value
+                    .trim()
+                    !== expected
+            );
+    }
+
+
+    function resetModal() {
+        tapeId = null;
+        tapeLabel = "";
+        removing = false;
+
+        labelDisplay.textContent = "-";
+        confirmationInput.value = "";
+        confirmationInput.disabled = false;
+
+        message.hidden = true;
+        message.textContent = "";
+        message.className =
+            "tapebox-modal-message";
+
+        confirmButton.disabled = true;
+        confirmButton.textContent =
+            "Remove from Catalog";
+
+        closeButton.disabled = false;
+        cancelButton.disabled = false;
+
+        confirmHelp.textContent = "-";
+    }
+
+
+    function closeModal() {
+        if (removing) {
+            return;
+        }
+
+        modal.hidden = true;
+        resetModal();
+    }
+
+
+    document.querySelectorAll(
+        ".remove-tape-catalog-button"
+    ).forEach((button) => {
+        button.addEventListener(
+            "click",
+            (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+
+                resetModal();
+
+                tapeId =
+                    button.dataset.tapeId;
+
+                tapeLabel =
+                    (
+                        button.dataset.tapeLabel
+                        || ""
+                    )
+                    .trim()
+                    .toUpperCase();
+
+                if (!tapeId || !tapeLabel) {
+                    return;
+                }
+
+                labelDisplay.textContent =
+                    tapeLabel;
+
+                modal.hidden = false;
+
+                updateConfirmation();
+
+                window.setTimeout(
+                    () => {
+                        confirmationInput.focus();
+                    },
+                    0
+                );
+            }
+        );
+    });
+
+
+    confirmationInput.addEventListener(
+        "input",
+        updateConfirmation
+    );
+
+
+    closeButton.addEventListener(
+        "click",
+        closeModal
+    );
+
+
+    cancelButton.addEventListener(
+        "click",
+        closeModal
+    );
+
+
+    modal.addEventListener(
+        "click",
+        (event) => {
+            if (
+                event.target === modal
+                && !removing
+            ) {
+                closeModal();
+            }
+        }
+    );
+
+
+    confirmButton.addEventListener(
+        "click",
+        async () => {
+            const expected =
+                expectedConfirmation();
+
+            if (
+                !tapeId
+                || !expected
+                || confirmationInput
+                    .value
+                    .trim()
+                    !== expected
+            ) {
+                updateConfirmation();
+                return;
+            }
+
+            removing = true;
+
+            confirmButton.disabled = true;
+            confirmButton.textContent =
+                "Removing...";
+
+            closeButton.disabled = true;
+            cancelButton.disabled = true;
+            confirmationInput.disabled = true;
+
+            message.hidden = false;
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Removing catalog records and "
+                + "creating a safety database backup...";
+
+            try {
+                const response =
+                    await fetch(
+                        "/api/tapes/"
+                        + encodeURIComponent(
+                            tapeId
+                        )
+                        + "/remove-catalog",
+                        {
+                            method: "POST",
+
+                            headers: {
+                                "Content-Type":
+                                    "application/json",
+                            },
+
+                            body:
+                                JSON.stringify(
+                                    {
+                                        confirmation:
+                                            confirmationInput
+                                                .value
+                                                .trim(),
+                                    }
+                                ),
+                        }
+                    );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || (
+                            "Tape catalog "
+                            + "removal failed."
+                        )
+                    );
+                }
+
+                message.className =
+                    "tapebox-modal-message success";
+
+                message.textContent =
+                    data.message
+                    + " Catalog files removed: "
+                    + data.files_removed
+                    + ". Spanned files removed: "
+                    + data.spanned_files_removed
+                    + ".";
+
+                confirmButton.hidden = true;
+                cancelButton.textContent =
+                    "Close";
+
+                window.setTimeout(
+                    () => {
+                        window.location.reload();
+                    },
+                    1400
+                );
+
+            } catch (error) {
+                removing = false;
+
+                message.hidden = false;
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+                confirmButton.disabled = false;
+                confirmButton.textContent =
+                    "Remove from Catalog";
+
+                closeButton.disabled = false;
+                cancelButton.disabled = false;
                 confirmationInput.disabled = false;
 
                 updateConfirmation();

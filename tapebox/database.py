@@ -3590,3 +3590,548 @@ def repair_catalog_database():
         "files": validation["files"],
         "health": final_health,
     }
+
+
+def import_existing_tape_files(
+    tape_id,
+    tape_label,
+    scanned_files,
+):
+    """
+    Import physical files discovered on an existing LTFS tape.
+
+    This is for files that already existed on the cartridge before
+    TapeBox cataloged them.
+
+    Rules:
+    - Exact tape path + same size: already cataloged.
+    - Exact tape path + different size: conflict; import nothing.
+    - New physical path: insert a normal file record.
+    - No archive job is invented.
+    - No checksum is invented.
+    - archived_at remains NULL because TapeBox did not archive it.
+    - The tape is not modified.
+    """
+
+    if tape_id is None:
+        raise ValueError(
+            "Registered tape ID is required."
+        )
+
+    label = str(
+        tape_label or ""
+    ).strip().upper()
+
+    if not label:
+        raise ValueError(
+            "Tape label is required."
+        )
+
+    entries = list(
+        scanned_files or []
+    )
+
+    with connect() as db:
+        tape = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE id = ?
+            """,
+            (tape_id,),
+        ).fetchone()
+
+        if tape is None:
+            raise ValueError(
+                f"Registered tape ID {tape_id} "
+                "does not exist."
+            )
+
+        registered_label = str(
+            tape["label"] or ""
+        ).strip().upper()
+
+        if registered_label != label:
+            raise ValueError(
+                "Loaded tape label does not match "
+                "the registered cartridge."
+            )
+
+        existing_count = 0
+        pending = []
+        conflicts = []
+
+        seen_paths = set()
+
+        for entry in entries:
+            tape_path = str(
+                entry.get("tape_path") or ""
+            ).strip()
+
+            filename = str(
+                entry.get("filename") or ""
+            ).strip()
+
+            relative_path = str(
+                entry.get("relative_path") or ""
+            ).strip()
+
+            if not tape_path.startswith("/"):
+                raise ValueError(
+                    f"Invalid LTFS tape path: {tape_path!r}"
+                )
+
+            if (
+                tape_path == "/.tapebox"
+                or tape_path.startswith(
+                    "/.tapebox/"
+                )
+            ):
+                continue
+
+            if not filename:
+                raise ValueError(
+                    f"Missing filename for {tape_path}"
+                )
+
+            if not relative_path:
+                raise ValueError(
+                    f"Missing relative path for {tape_path}"
+                )
+
+            try:
+                size_bytes = int(
+                    entry.get("size_bytes")
+                )
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Invalid file size for {tape_path}"
+                )
+
+            if size_bytes < 0:
+                raise ValueError(
+                    f"Invalid file size for {tape_path}"
+                )
+
+            if tape_path in seen_paths:
+                raise ValueError(
+                    "Physical LTFS scan returned duplicate "
+                    f"path: {tape_path}"
+                )
+
+            seen_paths.add(tape_path)
+
+            existing = db.execute(
+                """
+                SELECT
+                    id,
+                    filename,
+                    size_bytes,
+                    tape_path
+                FROM files
+                WHERE tape_id = ?
+                  AND tape_path = ?
+                LIMIT 1
+                """,
+                (
+                    tape_id,
+                    tape_path,
+                ),
+            ).fetchone()
+
+            if existing is not None:
+                if (
+                    int(existing["size_bytes"])
+                    == size_bytes
+                ):
+                    existing_count += 1
+                    continue
+
+                conflicts.append(
+                    {
+                        "tape_path": tape_path,
+                        "catalog_file_id": (
+                            existing["id"]
+                        ),
+                        "catalog_size_bytes": int(
+                            existing["size_bytes"]
+                        ),
+                        "physical_size_bytes": (
+                            size_bytes
+                        ),
+                    }
+                )
+                continue
+
+            part = db.execute(
+                """
+                SELECT
+                    file_parts.id,
+                    file_parts.file_id,
+                    file_parts.size_bytes
+                FROM file_parts
+                WHERE file_parts.tape_id = ?
+                  AND file_parts.tape_path = ?
+                LIMIT 1
+                """,
+                (
+                    tape_id,
+                    tape_path,
+                ),
+            ).fetchone()
+
+            if part is not None:
+                if (
+                    int(part["size_bytes"])
+                    == size_bytes
+                ):
+                    existing_count += 1
+                    continue
+
+                conflicts.append(
+                    {
+                        "tape_path": tape_path,
+                        "catalog_file_id": (
+                            part["file_id"]
+                        ),
+                        "catalog_part_id": (
+                            part["id"]
+                        ),
+                        "catalog_size_bytes": int(
+                            part["size_bytes"]
+                        ),
+                        "physical_size_bytes": (
+                            size_bytes
+                        ),
+                    }
+                )
+                continue
+
+            pending.append(
+                {
+                    "tape_path": tape_path,
+                    "relative_path": relative_path,
+                    "filename": filename,
+                    "size_bytes": size_bytes,
+                    "modified_at": (
+                        entry.get("modified_at")
+                    ),
+                }
+            )
+
+        if conflicts:
+            return {
+                "success": False,
+                "tape_id": tape_id,
+                "label": registered_label,
+                "files_scanned": len(entries),
+                "files_imported": 0,
+                "files_existing": existing_count,
+                "conflicts": conflicts,
+                "conflict_count": len(conflicts),
+                "error": (
+                    "One or more physical tape paths "
+                    "conflict with the catalog. "
+                    "No files were imported."
+                ),
+            }
+
+        imported_count = 0
+
+        for entry in pending:
+            relative_for_uri = (
+                entry["tape_path"].lstrip("/")
+            )
+
+            original_path = (
+                f"imported://{registered_label}/"
+                f"{relative_for_uri}"
+            )
+
+            db.execute(
+                """
+                INSERT INTO files (
+                    archive_job_id,
+                    original_path,
+                    relative_path,
+                    filename,
+                    size_bytes,
+                    checksum_sha256,
+                    tape_id,
+                    tape_path,
+                    is_spanned,
+                    original_created_at,
+                    original_modified_at,
+                    archived_at,
+                    verified_at
+                )
+                VALUES (
+                    NULL,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    NULL,
+                    ?,
+                    ?,
+                    0,
+                    NULL,
+                    ?,
+                    NULL,
+                    NULL
+                )
+                """,
+                (
+                    original_path,
+                    entry["relative_path"],
+                    entry["filename"],
+                    entry["size_bytes"],
+                    tape_id,
+                    entry["tape_path"],
+                    entry["modified_at"],
+                ),
+            )
+
+            imported_count += 1
+
+        catalog_used_bytes = (
+            _refresh_tape_used_bytes(
+                db,
+                tape_id,
+            )
+        )
+
+        db.execute(
+            """
+            UPDATE tapes
+            SET last_seen_at = ?
+            WHERE id = ?
+            """,
+            (
+                utc_now(),
+                tape_id,
+            ),
+        )
+
+        return {
+            "success": True,
+            "tape_id": tape_id,
+            "label": registered_label,
+            "files_scanned": len(entries),
+            "files_imported": imported_count,
+            "files_existing": existing_count,
+            "conflicts": [],
+            "conflict_count": 0,
+            "catalog_used_bytes": (
+                catalog_used_bytes
+            ),
+        }
+
+
+def remove_tape_from_catalog(tape_id):
+    """
+    Remove one tape and all catalog records that depend on it.
+
+    This is a SQLite/catalog operation only. It never accesses,
+    mounts, formats, erases, ejects, or writes to the physical tape.
+
+    Rules:
+      - Normal files assigned directly to this tape are removed.
+      - If this tape contains any part of a spanned logical file,
+        the entire logical file and all of its parts are removed.
+      - Other affected tapes have used_bytes recalculated.
+      - A catalog backup is created before destructive changes.
+    """
+
+    tape_id = int(tape_id)
+
+    #
+    # Confirm the tape exists before creating a backup.
+    #
+    with connect() as db:
+        tape = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE id = ?
+            """,
+            (tape_id,),
+        ).fetchone()
+
+    if tape is None:
+        raise ValueError(
+            "Tape not found."
+        )
+
+    tape_label = tape["label"]
+
+    #
+    # Destructive catalog operation:
+    # create a recoverable SQLite backup first.
+    #
+    backup_catalog()
+
+    with connect() as db:
+        #
+        # Re-check inside the mutation transaction.
+        #
+        tape = db.execute(
+            """
+            SELECT *
+            FROM tapes
+            WHERE id = ?
+            """,
+            (tape_id,),
+        ).fetchone()
+
+        if tape is None:
+            raise ValueError(
+                "Tape no longer exists."
+            )
+
+        #
+        # Files physically assigned directly to this tape.
+        #
+        direct_rows = db.execute(
+            """
+            SELECT id
+            FROM files
+            WHERE tape_id = ?
+            """,
+            (tape_id,),
+        ).fetchall()
+
+        direct_file_ids = {
+            int(row["id"])
+            for row in direct_rows
+        }
+
+        #
+        # Logical files having one or more physical parts
+        # on the tape being removed.
+        #
+        spanned_rows = db.execute(
+            """
+            SELECT DISTINCT file_id
+            FROM file_parts
+            WHERE tape_id = ?
+            """,
+            (tape_id,),
+        ).fetchall()
+
+        spanned_file_ids = {
+            int(row["file_id"])
+            for row in spanned_rows
+        }
+
+        file_ids_to_remove = (
+            direct_file_ids
+            | spanned_file_ids
+        )
+
+        #
+        # Find every other tape that contains a part belonging
+        # to one of the logical files being removed. Those tapes
+        # need their catalog-used-byte totals refreshed afterward.
+        #
+        affected_other_tapes = set()
+
+        parts_removed = 0
+
+        if file_ids_to_remove:
+            placeholders = ",".join(
+                "?"
+                for _ in file_ids_to_remove
+            )
+
+            file_id_values = tuple(
+                sorted(file_ids_to_remove)
+            )
+
+            part_rows = db.execute(
+                f"""
+                SELECT
+                    id,
+                    tape_id
+                FROM file_parts
+                WHERE file_id IN ({placeholders})
+                """,
+                file_id_values,
+            ).fetchall()
+
+            parts_removed = len(part_rows)
+
+            for row in part_rows:
+                other_tape_id = int(
+                    row["tape_id"]
+                )
+
+                if other_tape_id != tape_id:
+                    affected_other_tapes.add(
+                        other_tape_id
+                    )
+
+            #
+            # file_parts has ON DELETE CASCADE from files,
+            # so deleting the parent logical records also removes
+            # every physical part record belonging to them.
+            #
+            db.execute(
+                f"""
+                DELETE FROM files
+                WHERE id IN ({placeholders})
+                """,
+                file_id_values,
+            )
+
+        #
+        # There must now be no files/file_parts referencing the
+        # cartridge, allowing the NO ACTION tape FKs to protect us
+        # if anything unexpected was missed.
+        #
+        db.execute(
+            """
+            DELETE FROM tapes
+            WHERE id = ?
+            """,
+            (tape_id,),
+        )
+
+        #
+        # Removing an entire logical spanned file may have removed
+        # parts from other tapes as well.
+        #
+        for other_tape_id in sorted(
+            affected_other_tapes
+        ):
+            still_exists = db.execute(
+                """
+                SELECT 1
+                FROM tapes
+                WHERE id = ?
+                """,
+                (other_tape_id,),
+            ).fetchone()
+
+            if still_exists:
+                _refresh_tape_used_bytes(
+                    db,
+                    other_tape_id,
+                )
+
+        return {
+            "success": True,
+            "tape_id": tape_id,
+            "label": tape_label,
+            "files_removed": len(
+                file_ids_to_remove
+            ),
+            "direct_files_removed": len(
+                direct_file_ids
+            ),
+            "spanned_files_removed": len(
+                spanned_file_ids
+            ),
+            "parts_removed": parts_removed,
+            "physical_tape_modified": False,
+        }
