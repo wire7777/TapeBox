@@ -339,6 +339,79 @@ Tapes · TapeBox
         </div>
 
 
+        <div
+            id="existing-audit-results"
+            hidden
+            style="
+                margin-top: 18px;
+                padding: 16px;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+            "
+        >
+            <h3 style="margin-top: 0;">
+                Tape / Catalog Audit
+            </h3>
+
+            <div
+                id="existing-audit-summary"
+                class="tapebox-modal-message"
+                style="margin-bottom: 14px;"
+            ></div>
+
+            <div
+                style="
+                    display: grid;
+                    grid-template-columns:
+                        repeat(auto-fit, minmax(130px, 1fr));
+                    gap: 12px;
+                    margin-bottom: 16px;
+                "
+            >
+                <div>
+                    <strong>Matched</strong>
+                    <div id="audit-matched-count">0</div>
+                </div>
+
+                <div>
+                    <strong>Physical Only</strong>
+                    <div id="audit-physical-only-count">0</div>
+                </div>
+
+                <div>
+                    <strong>Catalog Only</strong>
+                    <div id="audit-catalog-only-count">0</div>
+                </div>
+
+                <div>
+                    <strong>Size Mismatches</strong>
+                    <div id="audit-size-mismatch-count">0</div>
+                </div>
+            </div>
+
+            <div
+                id="existing-audit-details"
+                style="
+                    max-height: 280px;
+                    overflow: auto;
+                    word-break: break-all;
+                "
+            ></div>
+
+            <p
+                style="
+                    margin-bottom: 0;
+                    margin-top: 14px;
+                    opacity: 0.75;
+                    font-size: 0.9em;
+                "
+            >
+                Read-only audit. No tape or catalog records
+                were modified.
+            </p>
+        </div>
+
+
         <div class="tapebox-modal-actions">
 
             <button
@@ -356,6 +429,15 @@ Tapes · TapeBox
                 hidden
             >
                 Add to Catalog
+            </button>
+
+            <button
+                type="button"
+                id="audit-existing-files-button"
+                class="action-button"
+                hidden
+            >
+                Audit Tape
             </button>
 
             <button
@@ -760,9 +842,29 @@ Tapes · TapeBox
             "register-existing-button"
         );
 
+    const auditButton =
+        document.getElementById(
+            "audit-existing-files-button"
+        );
+
     const importButton =
         document.getElementById(
             "import-existing-files-button"
+        );
+
+    const auditResults =
+        document.getElementById(
+            "existing-audit-results"
+        );
+
+    const auditSummary =
+        document.getElementById(
+            "existing-audit-summary"
+        );
+
+    const auditDetails =
+        document.getElementById(
+            "existing-audit-details"
         );
 
     const message =
@@ -834,11 +936,38 @@ Tapes · TapeBox
         registerButton.hidden = true;
         registerButton.disabled = false;
 
+        auditButton.hidden = true;
+        auditButton.disabled = false;
+
         importButton.hidden = true;
         importButton.disabled = false;
 
         inspectButton.hidden = false;
         inspectButton.disabled = false;
+
+        auditResults.hidden = true;
+        auditDetails.replaceChildren();
+
+        auditSummary.className =
+            "tapebox-modal-message";
+
+        auditSummary.textContent = "";
+
+        document.getElementById(
+            "audit-matched-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-physical-only-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-catalog-only-count"
+        ).textContent = "0";
+
+        document.getElementById(
+            "audit-size-mismatch-count"
+        ).textContent = "0";
 
         message.className =
             "tapebox-modal-message";
@@ -1008,12 +1137,14 @@ Tapes · TapeBox
                         + ".";
 
                     registerButton.hidden = true;
+                    auditButton.hidden = false;
                     importButton.hidden = false;
 
                 } else {
                     already.hidden = true;
                     form.hidden = false;
                     registerButton.hidden = false;
+                    auditButton.hidden = true;
                     importButton.hidden = true;
 
                     document.getElementById(
@@ -1120,6 +1251,9 @@ Tapes · TapeBox
                     "This cartridge is registered "
                     + "in the TapeBox catalog.";
 
+                auditButton.hidden = false;
+                auditButton.disabled = false;
+
                 importButton.hidden = false;
                 importButton.disabled = false;
 
@@ -1133,6 +1267,209 @@ Tapes · TapeBox
                     error.message;
 
                 registerButton.disabled = false;
+            }
+        }
+    );
+
+
+    function addAuditSection(
+        title,
+        items,
+        formatter
+    ) {
+        if (!items || !items.length) {
+            return;
+        }
+
+        const section =
+            document.createElement("div");
+
+        section.style.marginTop = "14px";
+
+        const heading =
+            document.createElement("strong");
+
+        heading.textContent =
+            title + " (" + items.length + ")";
+
+        section.appendChild(heading);
+
+        const list =
+            document.createElement("div");
+
+        list.style.marginTop = "6px";
+
+        for (const item of items) {
+            const row =
+                document.createElement("div");
+
+            row.style.padding = "5px 0";
+            row.style.borderBottom =
+                "1px solid rgba(255,255,255,0.07)";
+
+            row.textContent = formatter(item);
+
+            list.appendChild(row);
+        }
+
+        section.appendChild(list);
+        auditDetails.appendChild(section);
+    }
+
+
+    auditButton.addEventListener(
+        "click",
+        async () => {
+            if (
+                !cartridge
+                || !cartridge.uuid
+            ) {
+                return;
+            }
+
+            auditButton.disabled = true;
+            importButton.disabled = true;
+            inspectButton.disabled = true;
+            registerButton.disabled = true;
+
+            auditResults.hidden = true;
+            auditDetails.replaceChildren();
+
+            message.className =
+                "tapebox-modal-message";
+
+            message.textContent =
+                "Auditing physical LTFS contents "
+                + "against the catalog read-only...";
+
+            try {
+                const response = await fetch(
+                    "/api/tapes/audit",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+
+                        body: JSON.stringify(
+                            {
+                                uuid:
+                                    cartridge.uuid,
+                            }
+                        ),
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || "Tape audit failed."
+                    );
+                }
+
+                document.getElementById(
+                    "audit-matched-count"
+                ).textContent =
+                    data.matched_count || 0;
+
+                document.getElementById(
+                    "audit-physical-only-count"
+                ).textContent =
+                    data.physical_only_count || 0;
+
+                document.getElementById(
+                    "audit-catalog-only-count"
+                ).textContent =
+                    data.catalog_only_count || 0;
+
+                document.getElementById(
+                    "audit-size-mismatch-count"
+                ).textContent =
+                    data.size_mismatch_count || 0;
+
+                if (data.clean) {
+                    auditSummary.className =
+                        "tapebox-modal-message success";
+
+                    auditSummary.textContent =
+                        "Catalog and physical tape match.";
+                } else {
+                    auditSummary.className =
+                        "tapebox-modal-message error";
+
+                    auditSummary.textContent =
+                        "Differences were found. "
+                        + "No changes were made.";
+                }
+
+                addAuditSection(
+                    "Physical Only",
+                    data.physical_only,
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + formatBytes(
+                            item.size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Catalog Only",
+                    data.catalog_only,
+                    (item) =>
+                        item.tape_path
+                        + " — "
+                        + formatBytes(
+                            item.size_bytes
+                        )
+                );
+
+                addAuditSection(
+                    "Size Mismatches",
+                    data.size_mismatches,
+                    (item) =>
+                        item.tape_path
+                        + " — catalog "
+                        + formatBytes(
+                            item.catalog_size_bytes
+                        )
+                        + ", tape "
+                        + formatBytes(
+                            item.physical_size_bytes
+                        )
+                );
+
+                auditResults.hidden = false;
+
+                message.className =
+                    "tapebox-modal-message success";
+
+                message.textContent =
+                    "Tape audit completed read-only.";
+
+            } catch (error) {
+                message.className =
+                    "tapebox-modal-message error";
+
+                message.textContent =
+                    error.message;
+
+            } finally {
+                auditButton.disabled = false;
+                importButton.disabled = false;
+                inspectButton.disabled = false;
+
+                if (!registerButton.hidden) {
+                    registerButton.disabled = false;
+                }
             }
         }
     );
