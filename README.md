@@ -1,5 +1,7 @@
 # TapeBox
 
+**TapeBox v1.0 — Build 26.09.12**
+
 **TapeBox is a simple web-based LTFS/LTO tape archive manager for Linux.**
 
 TapeBox is designed for people who want to use LTO tape without needing an enterprise backup suite or complicated tape-library software.
@@ -13,23 +15,32 @@ It provides a straightforward workflow for staging files, planning tape usage, a
 - Web-based archive and restore interface
 - Standard LTFS storage — no proprietary tape filesystem
 - SSD/NVMe staging directory
+- Web upload plus normal SMB/NFS/SSH/SFTP/SCP/rsync staging
 - File and folder archive jobs
 - Archive planner with LTO generation awareness
 - Multi-tape archive support
 - Whole files kept on one tape whenever possible
 - Splitting/reassembly when a single file exceeds one tape
+- Resumable multi-tape archive and restore operations
 - SQLite file/tape catalog
-- Search for which cartridge contains a file
+- Search and folder-style browsing of cataloged files
+- Determine which cartridge or cartridges are required for a restore
+- Restore selected files, folders, or complete archive jobs
+- Live archive and restore progress
+- SHA256 verification when catalog checksums are available
+- Size-verified restore support for older normal LTFS files without cataloged SHA256 values
 - LTFS UUID-based cartridge identity
 - Friendly tape names, locations, and notes
-- Whole-job restore
-- Live archive and restore progress
 - Tape Inspector for arbitrary LTFS cartridges
-- Read-only inspection of existing media
+- Read-only inspection and browsing of existing LTFS media
+- Read-only import of files from existing LTFS cartridges
+- Three-way physical tape / manifest / SQLite catalog audit
+- Safe removal of a tape from the TapeBox catalog without modifying the physical cartridge
 - Prepare/format new LTFS cartridges
 - Add existing LTFS cartridges without reformatting
 - Restored Files browser
-- Database backup and restore
+- SQLite catalog backup and restore
+- Authenticated read-only catalog mirror endpoint
 - Physical tape eject with clean-unmount safeguards
 
 ## Why LTFS?
@@ -190,7 +201,7 @@ TapeBox currently serves plain HTTP by default.
 
 ## Security
 
-TapeBox 0.1.0 is intended for use on a **trusted private LAN**.
+TapeBox v1.0 is intended for use on a **trusted private LAN**.
 
 The built-in service listens on:
 
@@ -198,7 +209,7 @@ The built-in service listens on:
 0.0.0.0:8080
 ```
 
-TapeBox 0.1.0 does not provide built-in user authentication or HTTPS termination. Do **not** expose port 8080 directly to the public Internet.
+TapeBox v1.0 does not provide built-in user authentication or HTTPS termination. Do **not** expose port 8080 directly to the public Internet.
 
 If remote access is required, place TapeBox behind an appropriately secured reverse proxy, VPN, or other trusted access layer.
 
@@ -436,6 +447,12 @@ Inspection alone does **not** automatically add a foreign cartridge to the TapeB
 
 Registration is an explicit action.
 
+Existing physical files can then be scanned read-only and imported into the SQLite catalog without rewriting the cartridge.
+
+TapeBox can also perform a read-only audit comparing the physical LTFS contents, TapeBox manifest information, and the local SQLite catalog.
+
+A cataloged tape can also be removed from TapeBox's SQLite catalog. This removes TapeBox catalog records only and does not erase, format, or modify the physical LTFS cartridge.
+
 The LTFS UUID is treated as the permanent physical identity of a cataloged cartridge.
 
 ## Tape Inspector
@@ -475,10 +492,16 @@ The catalog tracks information such as:
 - notes
 - archive jobs
 - files
+- file sizes and paths
+- SHA256 checksums when available
 - file parts
 - tape associations
 
-This lets the web interface determine which cartridge or cartridges are required for a restore.
+The **Files** interface provides searchable, folder-style browsing of cataloged content.
+
+Files and folders can be selected for restore directly from the catalog. TapeBox builds a restore plan showing the total size and the cartridge or cartridges required.
+
+For spanned logical files, the catalog records each part and the cartridge containing that part.
 
 ## Tape Metadata
 
@@ -494,7 +517,7 @@ The LTFS UUID remains the permanent cartridge identity.
 
 ## Restore
 
-TapeBox supports restoring ordinary files and archive jobs as well as logical files that span multiple cartridges.
+TapeBox supports restoring individual files, multiple selected files, selected folders, complete archive jobs, and logical files that span multiple cartridges.
 
 The default destination is:
 
@@ -502,9 +525,17 @@ The default destination is:
 /mnt/tapebox/restored
 ```
 
+Before a restore begins, TapeBox builds a restore plan showing the selected file count, total size, destination, and required cartridges.
+
 For a multi-tape restore, TapeBox determines the required tape sequence from the catalog and waits for the correct cartridge.
 
 Live restore telemetry can show progress, bytes transferred, current tape, elapsed time, and operation state.
+
+For normal files with a cataloged SHA256 checksum, TapeBox verifies the restored data against that checksum.
+
+Older or imported normal LTFS files without a cataloged SHA256 checksum can still be restored. TapeBox always enforces the cataloged file size, while checksum verification is performed whenever an expected checksum is available.
+
+Spanned files retain stricter checksum requirements because safe multi-tape resume and final reconstruction depend on verified parts and completed-file integrity.
 
 ## Spanned Files
 
@@ -541,6 +572,10 @@ Default backup directory:
 Keep independent catalog backups.
 
 TapeBox also writes archive metadata/manifests associated with its LTFS workflow so the physical media carries recovery information in addition to the local SQLite catalog.
+
+TapeBox also provides an authenticated, read-only catalog mirror endpoint for the standalone TapeBox Catalog Viewer.
+
+Mirror downloads are created from a consistent SQLite backup snapshot rather than exposing the live database file directly. The mirror requires the configured `X-TapeBox-API-Key`, and the API key is stored separately from SQLite so it is not included in catalog backups or mirror snapshots.
 
 ## Safe Unmount and Eject
 
