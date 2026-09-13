@@ -202,6 +202,30 @@ TapeBox 0.1.0 does not provide built-in user authentication or HTTPS termination
 
 If remote access is required, place TapeBox behind an appropriately secured reverse proxy, VPN, or other trusted access layer.
 
+### Catalog Mirror API Key
+
+The read-only TapeBox Catalog Viewer authenticates catalog downloads with a shared API key.
+
+Open **Settings** and use **Generate Random API Key** to create a cryptographically random 256-bit key displayed as 64 hexadecimal characters.
+
+Copy the generated key to the Catalog Viewer, then click **Save Settings** to activate it.
+
+After saving, TapeBox intentionally does not display the existing API key again in the web interface. Leaving the API key field blank when saving other settings keeps the current key unchanged.
+
+The key is stored outside the TapeBox SQLite catalog at:
+
+```text
+/var/lib/tapebox/catalog-mirror-api-key
+```
+
+An administrator with server access can retrieve the current key later with:
+
+```bash
+sudo cat /var/lib/tapebox/catalog-mirror-api-key
+```
+
+The Catalog Viewer must be configured with the same key. The key is not stored in the TapeBox catalog database and is therefore not included in catalog mirror snapshots.
+
 ## Service Architecture
 
 TapeBox intentionally runs Gunicorn with **one worker** and multiple threads.
