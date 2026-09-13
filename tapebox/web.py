@@ -20,7 +20,7 @@ from flask import (
     after_this_request,
 )
 
-from tapebox import __version__
+from tapebox import __version__, __build__
 
 from tapebox.database import (
     initialize_database,
@@ -7319,6 +7319,7 @@ def settings_create_directory_api():
 def inject_tapebox_version():
     return {
         "tapebox_version": __version__,
+        "tapebox_build": __build__,
     }
 
 
