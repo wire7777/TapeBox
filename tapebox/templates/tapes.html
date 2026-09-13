@@ -1394,6 +1394,13 @@ Tapes · TapeBox
 
                 inspectButton.hidden = false;
 
+                window.setTimeout(
+                    () => {
+                        window.location.reload();
+                    },
+                    1000
+                );
+
             } catch (error) {
                 message.className =
                     "tapebox-modal-message error";
