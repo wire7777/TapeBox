@@ -2007,11 +2007,19 @@ window.monitorTapeBoxArchiveOperation =
         planPanel.style.display =
             "block";
 
-        planStatus.textContent =
-            "Calculating archive requirements...";
+        const hasExistingPlan =
+            planDetails.style.display === "block"
+            && planDetails.innerHTML.trim();
 
-        planDetails.style.display =
-            "none";
+        planStatus.textContent =
+            hasExistingPlan
+            ? "Updating archive plan..."
+            : "Calculating archive requirements...";
+
+        if (!hasExistingPlan) {
+            planDetails.style.display =
+                "none";
+        }
 
         try {
             const response =
@@ -2065,8 +2073,10 @@ window.monitorTapeBoxArchiveOperation =
                 error.message
                 || "Archive planning failed.";
 
-            planDetails.style.display =
-                "none";
+            if (!hasExistingPlan) {
+                planDetails.style.display =
+                    "none";
+            }
         }
     }
 
