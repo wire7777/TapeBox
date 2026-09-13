@@ -157,13 +157,36 @@
                 "
             >
 
+            <button
+                type="button"
+                class="action-button"
+                style="margin-top: 10px;"
+                onclick="
+                    const bytes = new Uint8Array(32);
+                    crypto.getRandomValues(bytes);
+                    const key = Array.from(
+                        bytes,
+                        b => b.toString(16).padStart(2, '0')
+                    ).join('');
+                    const field = document.getElementById(
+                        'catalog_mirror_api_key'
+                    );
+                    field.type = 'text';
+                    field.value = key;
+                    field.focus();
+                    field.select();
+                "
+            >
+                Generate Random API Key
+            </button>
+
             <div
                 style="
                     margin-top: 7px;
                     opacity: 0.72;
                 "
             >
-                Shared secret required by the read-only
+                Generate creates a new key locally; click Save Settings to activate it.<br>Shared secret required by the read-only
                 TapeBox Catalog Viewer.
             </div>
         </div>
