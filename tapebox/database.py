@@ -1422,7 +1422,8 @@ def remove_archive_job_history(job_id):
             """
             SELECT
                 id,
-                status
+                status,
+                bytes_written
             FROM archive_jobs
             WHERE id = ?
             """,
@@ -1439,13 +1440,37 @@ def remove_archive_job_history(job_id):
         ).strip().lower()
 
         #
-        # Never allow an active/resumable job to disappear.
+        # Finished jobs are removable from history.
+        # A stale PENDING job may also be removed, but only
+        # when nothing has been written and it owns no
+        # cataloged files.
         #
-        if status not in {
+        removable = status in {
             "completed",
             "error",
             "cancelled",
-        }:
+        }
+
+        if status == "pending":
+            bytes_written = int(
+                job["bytes_written"] or 0
+            )
+
+            cataloged_files = db.execute(
+                """
+                SELECT COUNT(*)
+                FROM files
+                WHERE archive_job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()[0]
+
+            removable = (
+                bytes_written == 0
+                and cataloged_files == 0
+            )
+
+        if not removable:
             raise ValueError(
                 f"Archive job #{job_id} cannot be removed "
                 f"while its status is '{status}'."

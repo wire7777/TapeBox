@@ -91,6 +91,16 @@ Archive Jobs · TapeBox
             Cancel Job
         </button>
 
+        {% elif job["status"] in ["completed", "error", "cancelled", "pending"] %}
+
+        <button
+            type="button"
+            class="action-button job-remove-history-button"
+            data-job-id="{{ job['id'] }}"
+        >
+            Remove from History
+        </button>
+
         {% else %}
 
         <span class="muted">
@@ -212,6 +222,103 @@ document.addEventListener(
             button.disabled = false;
             button.textContent =
                 originalText;
+        }
+    },
+    true
+);
+
+
+document.addEventListener(
+    "click",
+    async function (event) {
+        const button =
+            event.target.closest(
+                ".job-remove-history-button"
+            );
+
+        if (!button) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        const jobId =
+            button.dataset.jobId;
+
+        const confirmed =
+            await window.tapeboxConfirm({
+                title:
+                    "Remove from History?",
+
+                message:
+                    "Remove Archive Job #"
+                    + jobId
+                    + " from history?",
+
+                warning:
+                    "Archived files on tape and "
+                    + "TapeBox catalog records will "
+                    + "NOT be deleted.",
+
+                confirmText:
+                    "Remove from History",
+
+                danger: true,
+            });
+
+        if (!confirmed) {
+            return;
+        }
+
+        const originalText =
+            button.textContent;
+
+        button.disabled = true;
+        button.textContent =
+            "Removing...";
+
+        try {
+            const response =
+                await fetch(
+                    `/api/archive-jobs/${jobId}/history`,
+                    {
+                        method: "DELETE",
+                        cache: "no-store",
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Could not remove archive job."
+                );
+            }
+
+            window.location.reload();
+
+        } catch (error) {
+            button.disabled = false;
+            button.textContent =
+                originalText;
+
+            await window.tapeboxAlert({
+                title:
+                    "Could Not Remove History",
+
+                message:
+                    error.message
+                    || String(error),
+
+                type:
+                    "error",
+            });
         }
     },
     true

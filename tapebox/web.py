@@ -1992,6 +1992,51 @@ def archive_job_history_delete_api(job_id):
     """
     initialize_database()
 
+    job = get_archive_job(
+        job_id
+    )
+
+    if job is None:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    f"Archive job #{job_id} does not exist."
+                ),
+            }
+        ), 404
+
+    status = str(
+        job["status"] or ""
+    ).strip().lower()
+
+    #
+    # A stale PENDING job may be removable, but never while
+    # an in-memory TapeBox operation still owns that job.
+    #
+    if status == "pending":
+        with OPERATION_STATE_LOCK:
+            for operation in OPERATIONS.values():
+                if (
+                    operation.get("job_id") == job_id
+                    and operation.get("status")
+                    not in (
+                        "completed",
+                        "failed",
+                    )
+                ):
+                    return jsonify(
+                        {
+                            "success": False,
+                            "busy": True,
+                            "error": (
+                                "This pending archive job is "
+                                "still attached to an active "
+                                "TapeBox operation."
+                            ),
+                        }
+                    ), 409
+
     try:
         result = remove_archive_job_history(
             job_id
