@@ -2122,13 +2122,20 @@ def _restore_catalog_files(
 
     for row in files:
         #
-        # Every logical file requires a complete-file SHA256.
+        # Spanned restores depend on complete-file and part
+        # checksums for safe resume/finalization. Normal files
+        # imported from older/existing LTFS media may not have
+        # a cataloged SHA256 and can still be size-verified.
         #
-        if not row["checksum_sha256"]:
+        if (
+            row["is_spanned"]
+            and not row["checksum_sha256"]
+        ):
             return {
                 "success": False,
                 "error": (
-                    f"File ID {row['id']} has no SHA256 checksum."
+                    f"Spanned file ID {row['id']} "
+                    "has no SHA256 checksum."
                 ),
             }
 
@@ -2204,7 +2211,11 @@ def _restore_catalog_files(
 
         if (
             size != row["size_bytes"]
-            or checksum != row["checksum_sha256"]
+            or (
+                row["checksum_sha256"]
+                and checksum
+                != row["checksum_sha256"]
+            )
         ):
             return {
                 "success": False,
@@ -2734,7 +2745,8 @@ def _restore_catalog_files(
                         )
 
                     if (
-                        actual_checksum
+                        row["checksum_sha256"]
+                        and actual_checksum
                         != row["checksum_sha256"]
                     ):
                         raise RuntimeError(
