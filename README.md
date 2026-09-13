@@ -26,6 +26,7 @@ It provides a straightforward workflow for staging files, planning tape usage, a
 - Search and folder-style browsing of cataloged files
 - Determine which cartridge or cartridges are required for a restore
 - Restore selected files, folders, or complete archive jobs
+- Optional final-cartridge auto eject after Files restore
 - Live archive and restore progress
 - SHA256 verification when catalog checksums are available
 - Size-verified restore support for older normal LTFS files without cataloged SHA256 values
@@ -42,6 +43,7 @@ It provides a straightforward workflow for staging files, planning tape usage, a
 - SQLite catalog backup and restore
 - Authenticated read-only catalog mirror endpoint
 - Physical tape eject with clean-unmount safeguards
+- Idle-only server shutdown from Settings with confirmation
 
 ## Why LTFS?
 
@@ -537,6 +539,12 @@ Older or imported normal LTFS files without a cataloged SHA256 checksum can stil
 
 Spanned files retain stricter checksum requirements because safe multi-tape resume and final reconstruction depend on verified parts and completed-file integrity.
 
+On the **Files** page, **Auto eject after final restore** is enabled by default. With this option enabled, TapeBox cleanly unmounts and ejects the final cartridge after a successful restore.
+
+If the option is disabled, TapeBox still cleanly unmounts LTFS after the final successful restore but leaves the cartridge physically loaded in the drive.
+
+For multi-tape restores, intermediate cartridges are still automatically ejected when another cartridge is required. Wrong-tape handling also continues to eject the incorrect cartridge. Disabling final auto eject therefore does not bypass the normal cartridge-change or LTFS clean-unmount safeguards.
+
 ## Spanned Files
 
 For a logical file that exceeds a cartridge's usable capacity, TapeBox tracks individual parts across tapes.
@@ -596,6 +604,26 @@ write data
 TapeBox does not intentionally force a physical eject when LTFS has failed to cleanly unmount.
 
 Do not power off the tape drive, disconnect the SAS connection, kill TapeBox, or remove media while an archive, format, sync, or LTFS unmount is in progress.
+
+## Safe Server Shutdown
+
+The **Settings** page includes a **System Power** panel for safely shutting down the TapeBox server.
+
+The **Shut Down Server** button is disabled while TapeBox has an active tape or maintenance operation. It becomes available only when TapeBox reports that it is idle.
+
+Shutdown protection is enforced by the backend as well as the web interface. A shutdown request is rejected if TapeBox is busy, even if the request is submitted directly to the API.
+
+The shutdown workflow includes a second confirmation dialog with a red warning before the power-off request is submitted.
+
+TapeBox tracks active tape operations and maintenance tasks such as database maintenance and SCSI rescans when determining whether shutdown is safe. Once shutdown has been accepted, TapeBox also marks the shutdown itself as an active operation to prevent duplicate requests.
+
+The installer grants only the restricted passwordless command required for this feature:
+
+```text
+/usr/bin/systemctl poweroff
+```
+
+TapeBox invokes this through `sudo -n`; it does not require or install unrestricted passwordless sudo access.
 
 ## Manual Development Run
 
