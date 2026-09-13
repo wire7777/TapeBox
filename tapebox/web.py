@@ -1,4 +1,7 @@
 import argparse
+import ipaddress
+import os
+import secrets
 import subprocess
 import threading
 import uuid
@@ -14,6 +17,7 @@ from flask import (
     request,
     redirect,
     url_for,
+    after_this_request,
 )
 
 from tapebox.database import (
@@ -57,6 +61,11 @@ from tapebox.database import (
     DB_PATH,
     BACKUP_DIR,
 )
+
+CATALOG_MIRROR_API_KEY_PATH = Path(
+    "/var/lib/tapebox/catalog-mirror-api-key"
+)
+
 
 from tapebox.restore import (
     restore_archive_job,
@@ -6699,6 +6708,182 @@ def settings_database_backup_api():
         ), 500
 
 
+
+@app.route("/api/catalog-mirror/download")
+def catalog_mirror_download():
+    """
+    Return a consistent read-only snapshot of the TapeBox catalog.
+
+    The live SQLite database is never sent directly. A temporary
+    SQLite backup is created using SQLite's backup API and removed
+    after the response completes.
+
+    This endpoint is intentionally limited to localhost and
+    private LAN clients.
+    """
+
+    try:
+        client_ip = ipaddress.ip_address(
+            request.remote_addr
+        )
+
+    except ValueError:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Catalog mirror access denied."
+                ),
+            }
+        ), 403
+
+    allowed_networks = (
+        ipaddress.ip_network(
+            "127.0.0.0/8"
+        ),
+        ipaddress.ip_network(
+            "10.0.0.0/8"
+        ),
+        ipaddress.ip_network(
+            "172.16.0.0/12"
+        ),
+        ipaddress.ip_network(
+            "192.168.0.0/16"
+        ),
+        ipaddress.ip_network(
+            "::1/128"
+        ),
+        ipaddress.ip_network(
+            "fc00::/7"
+        ),
+        ipaddress.ip_network(
+            "fe80::/10"
+        ),
+    )
+
+    if not any(
+        client_ip in network
+        for network in allowed_networks
+        if (
+            client_ip.version
+            == network.version
+        )
+    ):
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Catalog mirror access denied."
+                ),
+            }
+        ), 403
+
+    expected_api_key = ""
+
+    try:
+        if CATALOG_MIRROR_API_KEY_PATH.is_file():
+            expected_api_key = (
+                CATALOG_MIRROR_API_KEY_PATH
+                .read_text()
+                .strip()
+            )
+    except OSError:
+        expected_api_key = ""
+
+    if not expected_api_key:
+        expected_api_key = os.environ.get(
+            "TAPEBOX_MIRROR_API_KEY",
+            "",
+        )
+
+    provided_api_key = request.headers.get(
+        "X-TapeBox-API-Key",
+        "",
+    )
+
+    if (
+        not expected_api_key
+        or not provided_api_key
+        or not secrets.compare_digest(
+            provided_api_key,
+            expected_api_key,
+        )
+    ):
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Catalog mirror access denied."
+                ),
+            }
+        ), 403
+
+    snapshot_path = None
+
+    try:
+        result = backup_catalog()
+
+        snapshot_path = Path(
+            result["path"]
+        )
+
+        if not snapshot_path.is_file():
+            raise OSError(
+                "Catalog snapshot was not created."
+            )
+
+        @after_this_request
+        def remove_mirror_snapshot(response):
+            try:
+                snapshot_path.unlink(
+                    missing_ok=True
+                )
+            except OSError:
+                pass
+
+            return response
+
+        response = send_file(
+            snapshot_path,
+            as_attachment=True,
+            download_name="tapebox-catalog.db",
+            conditional=False,
+            max_age=0,
+        )
+
+        response.headers[
+            "X-TapeBox-Catalog-Snapshot"
+        ] = "true"
+
+        response.headers[
+            "X-TapeBox-Catalog-Size"
+        ] = str(
+            result["size_bytes"]
+        )
+
+        response.headers[
+            "Cache-Control"
+        ] = "no-store"
+
+        return response
+
+    except Exception as exc:
+        if snapshot_path is not None:
+            try:
+                snapshot_path.unlink(
+                    missing_ok=True
+                )
+            except OSError:
+                pass
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+
 @app.route("/settings/database/download-latest")
 def settings_database_download_latest():
     """
@@ -7153,6 +7338,13 @@ def settings_page():
             ).strip()
         )
 
+        catalog_mirror_api_key = (
+            request.form.get(
+                "catalog_mirror_api_key",
+                "",
+            ).strip()
+        )
+
         try:
             if not restore_directory:
                 raise ValueError(
@@ -7193,6 +7385,30 @@ def settings_page():
                 "staging_directory",
                 staging_directory,
             )
+
+            if catalog_mirror_api_key:
+                CATALOG_MIRROR_API_KEY_PATH.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                temp_key_path = (
+                    CATALOG_MIRROR_API_KEY_PATH
+                    .with_suffix(".tmp")
+                )
+
+                temp_key_path.write_text(
+                    catalog_mirror_api_key + "\n"
+                )
+
+                temp_key_path.chmod(
+                    0o600
+                )
+
+                os.replace(
+                    temp_key_path,
+                    CATALOG_MIRROR_API_KEY_PATH,
+                )
 
             message = "Settings saved."
 

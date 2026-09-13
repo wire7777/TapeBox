@@ -129,6 +129,45 @@
             </div>
         </div>
 
+        <div style="margin-bottom: 22px;">
+            <label
+                for="catalog_mirror_api_key"
+                style="
+                    display: block;
+                    margin-bottom: 8px;
+                    font-weight: 600;
+                "
+            >
+                Catalog Mirror API Key
+            </label>
+
+            <input
+                id="catalog_mirror_api_key"
+                name="catalog_mirror_api_key"
+                type="password"
+                value=""
+                placeholder="Leave blank to keep current key"
+                autocomplete="new-password"
+                style="
+                    width: 100%;
+                    max-width: 840px;
+                    box-sizing: border-box;
+                    padding: 10px 12px;
+                    font: inherit;
+                "
+            >
+
+            <div
+                style="
+                    margin-top: 7px;
+                    opacity: 0.72;
+                "
+            >
+                Shared secret required by the read-only
+                TapeBox Catalog Viewer.
+            </div>
+        </div>
+
         <button
             type="submit"
             class="action-button"
