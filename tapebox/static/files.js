@@ -804,6 +804,24 @@
                         ).toFixed(1)}%)
                     </div>
 
+                    <div
+                        class="restore-progress-track"
+                        style="margin-top: 8px;"
+                    >
+                        <div
+                            class="restore-progress-bar"
+                            style="width: ${
+                                Math.min(
+                                    100,
+                                    Math.max(
+                                        0,
+                                        percent
+                                    )
+                                )
+                            }%;"
+                        ></div>
+                    </div>
+
                     ${speedHtml}
                     ${etaHtml}
                 </div>
