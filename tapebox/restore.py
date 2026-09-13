@@ -2015,6 +2015,7 @@ def restore_selected_files(
     file_ids,
     destination,
     progress=None,
+    auto_eject=True,
 ):
     """
     Restore an arbitrary selection of catalog file IDs.
@@ -2085,6 +2086,7 @@ def restore_selected_files(
         progress=progress,
         job_id=None,
         source_path="Selected catalog files",
+        auto_eject=auto_eject,
     )
 
 
@@ -2094,6 +2096,7 @@ def _restore_catalog_files(
     progress=None,
     job_id=None,
     source_path=None,
+    auto_eject=True,
 ):
     """
     Restore a supplied collection of cataloged files using the
@@ -2974,8 +2977,10 @@ def _restore_catalog_files(
             )
         ):
             #
-            # The bulk normal-file restore has finished using this
-            # cartridge and LTFS released it cleanly.
+            # LTFS has been released cleanly. Intermediate cartridges
+            # and wrong-tape cartridges must still eject so a
+            # multi-tape restore can continue. The user's auto-eject
+            # preference only applies to the final completed restore.
             #
             _report_progress(
                 progress,
@@ -2983,37 +2988,59 @@ def _restore_catalog_files(
                 type="unmounted",
             )
 
-            _report_progress(
-                progress,
-                (
-                    f"Ejecting "
-                    f"{loaded_name or 'cartridge'}..."
-                ),
-                type="ejecting",
-            )
-
-            eject_result = eject_tape()
-
-            result["auto_ejected"] = (
-                eject_result.get(
-                    "success",
+            should_eject = (
+                result.get("wrong_tape")
+                or not result.get(
+                    "completed",
                     False,
                 )
+                or auto_eject
             )
 
-            if eject_result.get("success"):
+            if not should_eject:
+                result["auto_ejected"] = False
+
                 _report_progress(
                     progress,
-                    "Cartridge ejected.",
-                    type="ejected",
+                    (
+                        "Restore complete. Cartridge "
+                        "left loaded by request."
+                    ),
+                    type="eject_skipped",
                 )
 
-            if not eject_result.get("success"):
-                result["eject_warning"] = (
+            else:
+                _report_progress(
+                    progress,
+                    (
+                        f"Ejecting "
+                        f"{loaded_name or 'cartridge'}..."
+                    ),
+                    type="ejecting",
+                )
+
+                eject_result = eject_tape()
+
+                result["auto_ejected"] = (
                     eject_result.get(
-                        "error",
-                        "Tape eject failed.",
+                        "success",
+                        False,
                     )
                 )
+
+                if eject_result.get("success"):
+                    _report_progress(
+                        progress,
+                        "Cartridge ejected.",
+                        type="ejected",
+                    )
+
+                if not eject_result.get("success"):
+                    result["eject_warning"] = (
+                        eject_result.get(
+                            "error",
+                            "Tape eject failed.",
+                        )
+                    )
 
     return result

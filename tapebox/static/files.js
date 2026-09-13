@@ -273,7 +273,8 @@
                                 "application/json"
                         },
                         body: JSON.stringify({
-                            file_ids: fileIds
+                            file_ids: fileIds,
+                            auto_eject: autoEject
                         })
                     }
                 );
@@ -438,6 +439,21 @@
                 >
                     Checking Drive...
                 </button>
+
+                <label
+                    style="
+                        margin-left: 16px;
+                        cursor: pointer;
+                        user-select: none;
+                    "
+                >
+                    <input
+                        type="checkbox"
+                        id="files-auto-eject-toggle"
+                        checked
+                    >
+                    Auto eject after final restore
+                </label>
             </div>
 
             <div
@@ -630,6 +646,15 @@
         restoreSelectedButton.disabled =
             locked
             || selectedCheckboxes().length === 0;
+
+        const autoEjectToggle =
+            document.getElementById(
+                "files-auto-eject-toggle"
+            );
+
+        if (autoEjectToggle) {
+            autoEjectToggle.disabled = locked;
+        }
     }
 
 
@@ -1300,6 +1325,15 @@
         const fileIds =
             plannedFileIds.slice();
 
+        const autoEjectToggle =
+            document.getElementById(
+                "files-auto-eject-toggle"
+            );
+
+        const autoEject =
+            !autoEjectToggle
+            || autoEjectToggle.checked;
+
         if (!fileIds.length) {
             return;
         }
@@ -1330,7 +1364,8 @@
                                 "application/json"
                         },
                         body: JSON.stringify({
-                            file_ids: fileIds
+                            file_ids: fileIds,
+                            auto_eject: autoEject
                         })
                     }
                 );

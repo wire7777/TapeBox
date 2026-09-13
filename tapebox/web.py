@@ -360,6 +360,7 @@ def _selected_restore_worker(
     operation_id,
     file_ids,
     destination,
+    auto_eject=True,
 ):
     """
     Run one arbitrary selected-file restore outside the HTTP
@@ -454,6 +455,7 @@ def _selected_restore_worker(
             file_ids,
             Path(destination),
             progress=progress,
+            auto_eject=auto_eject,
         )
 
         with OPERATION_STATE_LOCK:
@@ -2642,6 +2644,19 @@ def files_restore_start_api():
         [],
     )
 
+    auto_eject = payload.get(
+        "auto_eject",
+        True,
+    )
+
+    if not isinstance(auto_eject, bool):
+        return jsonify(
+            {
+                "success": False,
+                "error": "auto_eject must be a boolean.",
+            }
+        ), 400
+
     if not isinstance(raw_file_ids, list):
         return jsonify(
             {
@@ -2780,6 +2795,7 @@ def files_restore_start_api():
             "type": "restore_selected",
             "job_id": None,
             "file_ids": list(file_ids),
+            "auto_eject": auto_eject,
             "destination": str(
                 destination_path
             ),
@@ -2808,6 +2824,7 @@ def files_restore_start_api():
             operation_id,
             list(file_ids),
             str(destination_path),
+            auto_eject,
         ),
         daemon=True,
         name=(
