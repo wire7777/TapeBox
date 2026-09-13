@@ -20,6 +20,8 @@ from flask import (
     after_this_request,
 )
 
+from tapebox import __version__
+
 from tapebox.database import (
     initialize_database,
     list_tapes,
@@ -7310,6 +7312,14 @@ def settings_create_directory_api():
                 "error": str(exc),
             }
         ), 400
+
+
+
+@app.context_processor
+def inject_tapebox_version():
+    return {
+        "tapebox_version": __version__,
+    }
 
 
 @app.route("/settings", methods=["GET", "POST"])
