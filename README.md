@@ -19,6 +19,7 @@ It provides a straightforward workflow for staging files, planning tape usage, a
 - File and folder archive jobs
 - Archive planner with LTO generation awareness
 - Multi-tape archive support
+- Optional final-cartridge auto eject after Staging archive
 - Whole files kept on one tape whenever possible
 - Splitting/reassembly when a single file exceeds one tape
 - Resumable multi-tape archive and restore operations
@@ -388,6 +389,12 @@ TapeBox recursively calculates:
 - whether any single file requires spanning
 
 Normal files are kept whole whenever they fit on a cartridge.
+
+On the **Staging** page, **Auto eject after final archive** is enabled by default. With this option enabled, TapeBox cleanly unmounts and ejects the final cartridge after a successful archive.
+
+If the option is disabled, TapeBox still cleanly unmounts LTFS after the final successful archive but leaves the cartridge physically loaded in the drive.
+
+For multi-tape archives, intermediate cartridges are still automatically ejected when another cartridge is required. Disabling final auto eject therefore does not bypass cartridge-change or LTFS clean-unmount safeguards.
 
 TapeBox only needs to split a file when that **single logical file** is larger than the usable capacity of one cartridge.
 

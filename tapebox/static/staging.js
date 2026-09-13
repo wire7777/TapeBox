@@ -315,6 +315,11 @@ document.addEventListener(
                 "staging-archive-selected-button"
             );
 
+        const autoEjectToggle =
+            document.getElementById(
+                "staging-auto-eject-toggle"
+            );
+
         if (!selectedButton) {
             await window.tapeboxAlert({
                 title:
@@ -365,6 +370,11 @@ window.monitorTapeBoxArchiveOperation =
                 "staging-archive-selected-button"
             );
 
+        const autoEjectToggle =
+            document.getElementById(
+                "staging-auto-eject-toggle"
+            );
+
         if (panel) {
             panel.style.display = "block";
         }
@@ -386,6 +396,10 @@ window.monitorTapeBoxArchiveOperation =
 
             selectedButton.disabled = false;
 
+            if (autoEjectToggle) {
+                autoEjectToggle.disabled = false;
+            }
+
             if (
                 operation
                 && operation.status
@@ -401,6 +415,18 @@ window.monitorTapeBoxArchiveOperation =
                     operation.job_id
                     ? "Continue Archive"
                     : "Start Archive";
+
+                if (autoEjectToggle) {
+                    if (
+                        typeof operation.auto_eject
+                        === "boolean"
+                    ) {
+                        autoEjectToggle.checked =
+                            operation.auto_eject;
+                    }
+
+                    autoEjectToggle.disabled = true;
+                }
 
                 return;
             }
@@ -1794,6 +1820,11 @@ window.monitorTapeBoxArchiveOperation =
             "staging-archive-selected-button"
         );
 
+    const autoEjectToggle =
+        document.getElementById(
+            "staging-auto-eject-toggle"
+        );
+
     const deleteSelectedButton =
         document.getElementById(
             "staging-delete-selected-button"
@@ -1823,6 +1854,7 @@ window.monitorTapeBoxArchiveOperation =
         !selectAllButton
         || !clearAllButton
         || !archiveSelectedButton
+        || !autoEjectToggle
         || !deleteSelectedButton
         || !summary
         || !planPanel
@@ -2398,6 +2430,8 @@ window.monitorTapeBoxArchiveOperation =
                         },
                         body: JSON.stringify({
                             paths: paths,
+                            auto_eject:
+                                autoEjectToggle.checked,
                         }),
                     }
                 );
@@ -2460,6 +2494,17 @@ window.monitorTapeBoxArchiveOperation =
                 archiveSelectedButton.disabled =
                     false;
 
+                if (
+                    data.operation
+                    && typeof data.operation.auto_eject
+                        === "boolean"
+                ) {
+                    autoEjectToggle.checked =
+                        data.operation.auto_eject;
+                }
+
+                autoEjectToggle.disabled = true;
+
                 archiveSelectedButton.textContent =
                     "Start Archive";
 
@@ -2482,6 +2527,8 @@ window.monitorTapeBoxArchiveOperation =
 
                 archiveSelectedButton.disabled =
                     false;
+
+                autoEjectToggle.disabled = false;
 
                 archiveSelectedButton.textContent =
                     originalText;
@@ -2683,6 +2730,16 @@ window.monitorTapeBoxArchiveOperation =
             archiveSelectedButton.dataset
                 .archiveOperationId =
                     operation.id;
+
+            if (
+                typeof operation.auto_eject
+                    === "boolean"
+            ) {
+                autoEjectToggle.checked =
+                    operation.auto_eject;
+            }
+
+            autoEjectToggle.disabled = true;
 
             const panel =
                 document.getElementById(

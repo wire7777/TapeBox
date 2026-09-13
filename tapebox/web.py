@@ -602,6 +602,7 @@ def _archive_staging_worker(
     operation_id,
     source_path,
     cleanup_on_complete=False,
+    auto_eject=True,
 ):
     """
     Archive one staging file or directory outside the HTTP
@@ -682,11 +683,13 @@ def _archive_staging_worker(
             result = resume_archive_job(
                 existing_job_id,
                 progress_callback=archive_progress,
+                auto_eject=auto_eject,
             )
         else:
             result = archive_path(
                 Path(source_path),
                 progress_callback=archive_progress,
+                auto_eject=auto_eject,
             )
 
         with OPERATION_STATE_LOCK:
@@ -728,6 +731,11 @@ def _archive_staging_worker(
 
                     operation["message"] = (
                         "Archive complete."
+                        if auto_eject
+                        else (
+                            "Archive complete. "
+                            "Cartridge left loaded by request."
+                        )
                     )
 
             else:
@@ -5188,6 +5196,19 @@ def staging_archive_selected_api():
         []
     )
 
+    auto_eject = payload.get(
+        "auto_eject",
+        True,
+    )
+
+    if not isinstance(auto_eject, bool):
+        return jsonify(
+            {
+                "success": False,
+                "error": "auto_eject must be a boolean.",
+            }
+        ), 400
+
     if not isinstance(
         relative_paths,
         list,
@@ -5397,6 +5418,7 @@ def staging_archive_selected_api():
         "id": operation_id,
         "type": "archive_staging_selection",
         "job_id": int(job_id),
+        "auto_eject": auto_eject,
         "destination": str(
             snapshot_path
         ),
@@ -5590,6 +5612,7 @@ def staging_archive_operation_api():
         "id": operation_id,
         "type": "archive_staging_selection",
         "job_id": int(job["id"]),
+        "auto_eject": True,
         "file_ids": [],
         "destination": str(
             job["source_path"]
@@ -5843,12 +5866,18 @@ def archive_operation_start_api(
             "destination"
         ]
 
+        auto_eject = operation.get(
+            "auto_eject",
+            True,
+        )
+
     worker = threading.Thread(
         target=_archive_staging_worker,
         args=(
             operation_id,
             source_path,
             True,
+            auto_eject,
         ),
         daemon=True,
         name=(

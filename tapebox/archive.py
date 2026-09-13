@@ -1362,6 +1362,7 @@ def archive_folder(source_path):
 def archive_path(
     source_path,
     progress_callback=None,
+    auto_eject=True,
 ):
     """
     Archive either one regular file or one directory tree.
@@ -1379,6 +1380,7 @@ def archive_path(
         return archive_folder_job(
             source,
             progress_callback=progress_callback,
+            auto_eject=auto_eject,
         )
 
     return archive_file(
@@ -1619,6 +1621,7 @@ def archive_folder_job(
     source_path,
     job_id=None,
     progress_callback=None,
+    auto_eject=True,
 ):
     """
     Archive a folder using a resumable archive job.
@@ -2931,7 +2934,9 @@ def archive_folder_job(
     #
     eject_result = None
 
-    if manifest_result.get("success"):
+    if manifest_result.get("success") and (
+        not all_complete or auto_eject
+    ):
         eject_result = eject_tape()
 
     return {
@@ -2988,6 +2993,7 @@ def archive_folder_job(
 def resume_archive_job(
     job_id,
     progress_callback=None,
+    auto_eject=True,
 ):
     """
     Resume an existing folder archive job.
@@ -3009,6 +3015,7 @@ def resume_archive_job(
         job["source_path"],
         job_id=job_id,
         progress_callback=progress_callback,
+        auto_eject=auto_eject,
     )
 
 
