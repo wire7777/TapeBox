@@ -121,6 +121,62 @@ OPERATIONS = {}
 
 ACTIVE_TAPE_OPERATION_ID = None
 
+#
+# Synchronous system/maintenance work that does not necessarily
+# own the physical tape drive. Shutdown is blocked while anything
+# is registered here.
+#
+ACTIVE_MAINTENANCE_OPERATIONS = set()
+
+
+def _begin_maintenance_operation(name):
+    with OPERATION_STATE_LOCK:
+        ACTIVE_MAINTENANCE_OPERATIONS.add(
+            str(name)
+        )
+
+
+def _end_maintenance_operation(name):
+    with OPERATION_STATE_LOCK:
+        ACTIVE_MAINTENANCE_OPERATIONS.discard(
+            str(name)
+        )
+
+
+def _system_shutdown_status():
+    with OPERATION_STATE_LOCK:
+        tape_operation = (
+            ACTIVE_TAPE_OPERATION_ID
+        )
+
+        maintenance_operations = sorted(
+            ACTIVE_MAINTENANCE_OPERATIONS
+        )
+
+    blockers = []
+
+    if tape_operation:
+        blockers.append(
+            f"Tape operation active: "
+            f"{tape_operation}"
+        )
+
+    for name in maintenance_operations:
+        blockers.append(
+            f"Maintenance operation active: "
+            f"{name}"
+        )
+
+    return {
+        "can_shutdown": not blockers,
+        "busy": bool(blockers),
+        "tape_operation": tape_operation,
+        "maintenance_operations": (
+            maintenance_operations
+        ),
+        "blockers": blockers,
+    }
+
 
 def _persist_selected_restore(operation):
     """
@@ -6634,15 +6690,26 @@ def settings_database_check_api():
     Run a read-only health check of the live TapeBox catalog.
     """
 
-    result = check_catalog_health()
-
-    status_code = (
-        200
-        if result.get("success")
-        else 500
+    operation_name = "database-check"
+    _begin_maintenance_operation(
+        operation_name
     )
 
-    return jsonify(result), status_code
+    try:
+        result = check_catalog_health()
+
+        status_code = (
+            200
+            if result.get("success")
+            else 500
+        )
+
+        return jsonify(result), status_code
+
+    finally:
+        _end_maintenance_operation(
+            operation_name
+        )
 
 
 @app.route(
@@ -6670,6 +6737,11 @@ def settings_database_repair_api():
             }
         ), 409
 
+    operation_name = "database-repair"
+    _begin_maintenance_operation(
+        operation_name
+    )
+
     try:
         result = repair_catalog_database()
 
@@ -6689,6 +6761,11 @@ def settings_database_repair_api():
             }
         ), 500
 
+    finally:
+        _end_maintenance_operation(
+            operation_name
+        )
+
 
 @app.route(
     "/api/settings/database/backup",
@@ -6698,6 +6775,11 @@ def settings_database_backup_api():
     """
     Create a consistent backup of the TapeBox catalog.
     """
+
+    operation_name = "database-backup"
+    _begin_maintenance_operation(
+        operation_name
+    )
 
     try:
         result = backup_catalog()
@@ -6725,6 +6807,11 @@ def settings_database_backup_api():
                 "error": str(exc),
             }
         ), 500
+
+    finally:
+        _end_maintenance_operation(
+            operation_name
+        )
 
 
 
@@ -7089,21 +7176,26 @@ def settings_database_restore_api():
             }
         ), 400
 
-    BACKUP_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    upload_path = (
-        BACKUP_DIR
-        / (
-            "uploaded-"
-            + uuid.uuid4().hex
-            + ".db"
-        )
+    operation_name = "database-restore"
+    _begin_maintenance_operation(
+        operation_name
     )
 
     try:
+        BACKUP_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        upload_path = (
+            BACKUP_DIR
+            / (
+                "uploaded-"
+                + uuid.uuid4().hex
+                + ".db"
+            )
+        )
+
         upload.save(upload_path)
 
         validation = validate_catalog_database(
@@ -7159,6 +7251,10 @@ def settings_database_restore_api():
             }
         ), 500
 
+    finally:
+        _end_maintenance_operation(
+            operation_name
+        )
 
 
 @app.route("/api/settings/drive-status")
@@ -7197,6 +7293,11 @@ def settings_rescan_scsi_api():
     """
     Rescan the Linux SCSI bus and rediscover TapeBox tape drives.
     """
+
+    operation_name = "scsi-rescan"
+    _begin_maintenance_operation(
+        operation_name
+    )
 
     command = [
         "sudo",
@@ -7266,6 +7367,143 @@ def settings_rescan_scsi_api():
             }
         ), 500
 
+    finally:
+        _end_maintenance_operation(
+            operation_name
+        )
+
+
+@app.route(
+    "/api/settings/system/shutdown-status"
+)
+def settings_system_shutdown_status_api():
+    """
+    Report whether TapeBox is currently safe to shut down.
+    """
+
+    return jsonify(
+        {
+            "success": True,
+            **_system_shutdown_status(),
+        }
+    )
+
+
+def _schedule_system_poweroff():
+    """
+    Delay poweroff briefly so the HTTP response can complete.
+    """
+
+    def worker():
+        threading.Event().wait(1.0)
+
+        result = subprocess.run(
+            [
+                "sudo",
+                "-n",
+                "/usr/bin/systemctl",
+                "poweroff",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            _end_maintenance_operation(
+                "system-shutdown"
+            )
+
+    thread = threading.Thread(
+        target=worker,
+        name="tapebox-system-poweroff",
+        daemon=True,
+    )
+    thread.start()
+
+
+@app.route(
+    "/api/settings/system/shutdown",
+    methods=["POST"],
+)
+def settings_system_shutdown_api():
+    """
+    Shut down the TapeBox server only while fully idle.
+    """
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    if payload.get("confirm") is not True:
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Shutdown confirmation is required."
+                ),
+            }
+        ), 400
+
+    global ACTIVE_MAINTENANCE_OPERATIONS
+
+    with OPERATION_STATE_LOCK:
+        blockers = []
+
+        if ACTIVE_TAPE_OPERATION_ID:
+            blockers.append(
+                "Tape operation active: "
+                + str(ACTIVE_TAPE_OPERATION_ID)
+            )
+
+        for name in sorted(
+            ACTIVE_MAINTENANCE_OPERATIONS
+        ):
+            blockers.append(
+                "Maintenance operation active: "
+                + str(name)
+            )
+
+        if blockers:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "can_shutdown": False,
+                    "blockers": blockers,
+                    "error": (
+                        "TapeBox is busy and cannot "
+                        "shut down."
+                    ),
+                }
+            ), 409
+
+        ACTIVE_MAINTENANCE_OPERATIONS.add(
+            "system-shutdown"
+        )
+
+    try:
+        _schedule_system_poweroff()
+    except Exception as exc:
+        _end_maintenance_operation(
+            "system-shutdown"
+        )
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "message": (
+                "TapeBox shutdown has been requested."
+            ),
+        }
+    )
 
 
 @app.route("/api/settings/directories")

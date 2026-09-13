@@ -275,6 +275,117 @@
 
 <div class="panel" style="margin-top: 20px;">
 
+    <h2>System Power</h2>
+
+    <div
+        id="shutdown-status-message"
+        style="
+            margin-bottom: 14px;
+            opacity: 0.85;
+        "
+    >
+        Checking system status...
+    </div>
+
+    <button
+        type="button"
+        id="shutdown-server-button"
+        class="action-button"
+        disabled
+        style="
+            opacity: 0.45;
+            cursor: not-allowed;
+        "
+    >
+        Shut Down Server
+    </button>
+
+</div>
+
+
+<div
+    id="shutdown-confirm-modal"
+    style="
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.72);
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+        padding: 20px;
+    "
+>
+    <div
+        style="
+            width: min(460px, 100%);
+            background: #1b1b1b;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 10px;
+            padding: 22px;
+            box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+        "
+    >
+        <h2 style="margin-top: 0;">
+            Shut Down TapeBox
+        </h2>
+
+        <div
+            style="
+                color: #ff453a;
+                font-weight: 700;
+                margin-bottom: 14px;
+                font-size: 1.05rem;
+            "
+        >
+            Are you sure you want to shut down?
+        </div>
+
+        <div
+            style="
+                opacity: 0.85;
+                margin-bottom: 22px;
+                line-height: 1.45;
+            "
+        >
+            The TapeBox server will power off and become
+            unavailable until it is started again manually.
+        </div>
+
+        <div
+            style="
+                display: flex;
+                gap: 10px;
+                justify-content: flex-end;
+            "
+        >
+            <button
+                type="button"
+                id="shutdown-cancel-button"
+                class="action-button"
+            >
+                Cancel
+            </button>
+
+            <button
+                type="button"
+                id="shutdown-confirm-button"
+                class="action-button"
+                style="
+                    background: #b42318;
+                    border-color: #d92d20;
+                    color: #fff;
+                "
+            >
+                Shut Down
+            </button>
+        </div>
+    </div>
+</div>
+
+
+<div class="panel" style="margin-top: 20px;">
+
     <h2>Database</h2>
 
     <div style="margin-bottom: 18px;">
@@ -1280,6 +1391,210 @@
 
 
     refreshDriveStatus();
+})();
+
+
+(() => {
+    const shutdownButton =
+        document.getElementById(
+            "shutdown-server-button"
+        );
+
+    const shutdownMessage =
+        document.getElementById(
+            "shutdown-status-message"
+        );
+
+    const shutdownModal =
+        document.getElementById(
+            "shutdown-confirm-modal"
+        );
+
+    const shutdownCancel =
+        document.getElementById(
+            "shutdown-cancel-button"
+        );
+
+    const shutdownConfirm =
+        document.getElementById(
+            "shutdown-confirm-button"
+        );
+
+    let canShutdown = false;
+
+
+    function setShutdownReady(ready) {
+        canShutdown = Boolean(ready);
+
+        shutdownButton.disabled = !canShutdown;
+
+        if (canShutdown) {
+            shutdownButton.style.opacity = "1";
+            shutdownButton.style.cursor = "pointer";
+            shutdownButton.style.background = "#b42318";
+            shutdownButton.style.borderColor = "#d92d20";
+            shutdownButton.style.color = "#fff";
+        } else {
+            shutdownButton.style.opacity = "0.45";
+            shutdownButton.style.cursor = "not-allowed";
+            shutdownButton.style.background = "";
+            shutdownButton.style.borderColor = "";
+            shutdownButton.style.color = "";
+        }
+    }
+
+
+    async function refreshShutdownStatus() {
+        try {
+            const response = await fetch(
+                "/api/settings/system/shutdown-status",
+                {
+                    cache: "no-store",
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.error ||
+                    "Could not check shutdown status."
+                );
+            }
+
+            setShutdownReady(
+                data.can_shutdown === true
+            );
+
+            if (data.can_shutdown) {
+                shutdownMessage.textContent =
+                    "TapeBox is idle. Server shutdown is available.";
+                return;
+            }
+
+            if (
+                Array.isArray(data.blockers) &&
+                data.blockers.length
+            ) {
+                shutdownMessage.textContent =
+                    data.blockers.join(" • ");
+            } else {
+                shutdownMessage.textContent =
+                    "TapeBox is busy. Shutdown is disabled.";
+            }
+
+        } catch (error) {
+            setShutdownReady(false);
+
+            shutdownMessage.textContent =
+                "Shutdown status unavailable: " +
+                error.message;
+        }
+    }
+
+
+    shutdownButton.addEventListener(
+        "click",
+        () => {
+            if (!canShutdown) {
+                return;
+            }
+
+            shutdownModal.style.display = "flex";
+        }
+    );
+
+
+    shutdownCancel.addEventListener(
+        "click",
+        () => {
+            shutdownModal.style.display = "none";
+        }
+    );
+
+
+    shutdownModal.addEventListener(
+        "click",
+        (event) => {
+            if (event.target === shutdownModal) {
+                shutdownModal.style.display = "none";
+            }
+        }
+    );
+
+
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (
+                event.key === "Escape" &&
+                shutdownModal.style.display === "flex"
+            ) {
+                shutdownModal.style.display = "none";
+            }
+        }
+    );
+
+
+    shutdownConfirm.addEventListener(
+        "click",
+        async () => {
+            shutdownConfirm.disabled = true;
+            shutdownCancel.disabled = true;
+
+            shutdownMessage.textContent =
+                "Requesting server shutdown...";
+
+            try {
+                const response = await fetch(
+                    "/api/settings/system/shutdown",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            confirm: true,
+                        }),
+                    }
+                );
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(
+                        data.error ||
+                        "Shutdown request failed."
+                    );
+                }
+
+                shutdownModal.style.display = "none";
+                setShutdownReady(false);
+
+                shutdownMessage.textContent =
+                    "Shutdown requested. TapeBox is powering off...";
+
+            } catch (error) {
+                shutdownMessage.textContent =
+                    error.message;
+
+                shutdownConfirm.disabled = false;
+                shutdownCancel.disabled = false;
+
+                shutdownModal.style.display = "none";
+
+                await refreshShutdownStatus();
+            }
+        }
+    );
+
+
+    refreshShutdownStatus();
+
+    window.setInterval(
+        refreshShutdownStatus,
+        2000
+    );
 })();
 
 

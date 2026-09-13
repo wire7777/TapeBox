@@ -296,10 +296,11 @@ udevadm trigger
 echo "  Installed: $UDEV_FILE"
 
 echo
-echo "Installing restricted SCSI rescan sudo rule..."
+echo "Installing restricted TapeBox sudo rules..."
 
 cat > "$SUDOERS_FILE" <<EOF_SUDOERS
 $RUN_USER ALL=(root) NOPASSWD: /usr/bin/rescan-scsi-bus.sh
+$RUN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 EOF_SUDOERS
 
 chmod 0440 "$SUDOERS_FILE"
