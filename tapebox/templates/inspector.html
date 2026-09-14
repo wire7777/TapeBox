@@ -92,6 +92,45 @@ Tape Inspector - TapeBox
         >
             Checking tape drive status...
         </div>
+
+        <div
+            id="inspector-cartridge-identity"
+            style="
+                margin-top: 14px;
+                padding-top: 14px;
+                border-top: 1px solid rgba(255,255,255,0.10);
+                line-height: 1.8;
+            "
+            hidden
+        >
+            <div>
+                <strong>Loaded Tape:</strong>
+
+                <span
+                    id="inspector-cartridge-label"
+                    class="tape-badge"
+                >
+                    UNKNOWN
+                </span>
+            </div>
+
+            <div>
+                <strong>Cataloged:</strong>
+                <span id="inspector-cartridge-cataloged">
+                    -
+                </span>
+            </div>
+
+            <div>
+                <strong>LTFS UUID:</strong>
+                <span
+                    id="inspector-cartridge-uuid"
+                    class="muted"
+                >
+                    -
+                </span>
+            </div>
+        </div>
     </div>
 
 
@@ -421,6 +460,26 @@ Tape Inspector - TapeBox
     const statusDetail = document.getElementById(
         "inspector-drive-detail"
     );
+
+    const cartridgeIdentity =
+        document.getElementById(
+            "inspector-cartridge-identity"
+        );
+
+    const cartridgeLabel =
+        document.getElementById(
+            "inspector-cartridge-label"
+        );
+
+    const cartridgeCataloged =
+        document.getElementById(
+            "inspector-cartridge-cataloged"
+        );
+
+    const cartridgeUuid =
+        document.getElementById(
+            "inspector-cartridge-uuid"
+        );
 
     const activityDot =
         document.getElementById(
@@ -1777,6 +1836,14 @@ Tape Inspector - TapeBox
 
             const data = await response.json();
 
+            const cartridge =
+                data.cartridge || {};
+
+            const loadedTapeLabel =
+                cartridge.catalog_label
+                || cartridge.label
+                || null;
+
             driveReady = Boolean(
                 data.online
                 && data.available
@@ -1787,6 +1854,38 @@ Tape Inspector - TapeBox
             tapeMounted = Boolean(
                 data.mounted
             );
+
+            if (
+                loadedTapeLabel
+                && cartridge.loaded !== false
+            ) {
+                cartridgeIdentity.hidden = false;
+
+                cartridgeLabel.textContent =
+                    loadedTapeLabel;
+
+                cartridgeCataloged.textContent =
+                    cartridge.cataloged
+                    ? "Yes"
+                    : "No";
+
+                cartridgeUuid.textContent =
+                    cartridge.ltfs_uuid
+                    || cartridge.catalog_uuid
+                    || "-";
+
+            } else {
+                cartridgeIdentity.hidden = true;
+
+                cartridgeLabel.textContent =
+                    "UNKNOWN";
+
+                cartridgeCataloged.textContent =
+                    "-";
+
+                cartridgeUuid.textContent =
+                    "-";
+            }
 
             statusPanel.classList.toggle(
                 "online",
@@ -1866,7 +1965,14 @@ Tape Inspector - TapeBox
                     "Tape Ready";
 
                 loadedTapeDescription.textContent =
-                    "A cartridge is loaded and ready to inspect.";
+                    loadedTapeLabel
+                    ? loadedTapeLabel
+                        + " is loaded and ready to inspect."
+                    : (
+                        data.state === "probing"
+                        ? "Identifying loaded cartridge..."
+                        : "A cartridge is loaded and ready to inspect."
+                    );
 
                 statusState.textContent =
                     "TAPE ONLINE";

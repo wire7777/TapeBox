@@ -2060,9 +2060,35 @@ def operation_resume_api(operation_id):
             ), 409
 
         if ACTIVE_TAPE_OPERATION_ID:
-            active = OPERATIONS.get(
+            active_operation_id = (
                 ACTIVE_TAPE_OPERATION_ID
             )
+
+            active = OPERATIONS.get(
+                active_operation_id
+            )
+
+            #
+            # Cartridge identification temporarily owns
+            # the physical drive. Keep the drive locked,
+            # but let the Files UI wait and retry.
+            #
+            if (
+                active_operation_id
+                == "cartridge-status-probe"
+            ):
+                return jsonify(
+                    {
+                        "success": False,
+                        "busy": True,
+                        "probe_busy": True,
+                        "error": (
+                            "Identifying the loaded "
+                            "cartridge..."
+                        ),
+                        "operation": None,
+                    }
+                ), 409
 
             return jsonify(
                 {
@@ -3365,9 +3391,39 @@ def files_restore_start_api():
 
     with OPERATION_STATE_LOCK:
         if ACTIVE_TAPE_OPERATION_ID:
-            active = OPERATIONS.get(
+            active_operation_id = (
                 ACTIVE_TAPE_OPERATION_ID
             )
+
+            active = OPERATIONS.get(
+                active_operation_id
+            )
+
+            #
+            # The cartridge-status probe temporarily owns the
+            # physical drive while identifying the loaded LTFS
+            # cartridge. It is not a user restore/archive job.
+            #
+            # Tell the Files UI to wait for that short probe to
+            # finish and retry Start Restore. Do not allow the
+            # restore to overlap the probe.
+            #
+            if (
+                active_operation_id
+                == "cartridge-status-probe"
+            ):
+                return jsonify(
+                    {
+                        "success": False,
+                        "busy": True,
+                        "probe_busy": True,
+                        "error": (
+                            "Identifying the loaded "
+                            "cartridge..."
+                        ),
+                        "operation": None,
+                    }
+                ), 409
 
             return jsonify(
                 {

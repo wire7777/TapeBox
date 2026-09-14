@@ -34,6 +34,21 @@
     let activeOperationId = null;
     let operationPollTimer = null;
     let driveReadinessTimer = null;
+    let waitingTapeStatusTimer = null;
+    let waitingTapeStatusActive = false;
+
+    //
+    // Preserve the last cartridge-identification result across
+    // renderOperation() calls. Operation polling rebuilds the
+    // waiting panel, so the button must be rendered from the
+    // same state used by the tape-status poller.
+    //
+    let waitingTapeReadiness = {
+        requiredTapeLabel: null,
+        loadedTapeLabel: null,
+        state: "not_ready",
+    };
+
     let restoreCompleted = false;
 
     let tapeCountDebounceTimer = null;
@@ -726,28 +741,62 @@
                 operation.status
                 === "waiting_for_tape"
             ) {
-                const waitingTapes =
-                    Array.isArray(
-                        operation.result?.required_tapes
-                    )
-                    ? operation.result.required_tapes
-                    : [];
-
-                const waitingTapeLabel =
-                    waitingTapes.length
-                    ? (
-                        waitingTapes[0].label
-                        ?? waitingTapes[0].tape_label
-                        ?? waitingTapes[0].ltfs_uuid
-                        ?? waitingTapes[0]
-                    )
-                    : null;
-
                 startButton.disabled = true;
-                startButton.textContent =
-                    waitingTapeLabel
-                    ? `Waiting for ${waitingTapeLabel}...`
-                    : "Waiting for Tape...";
+
+                const driveStatus =
+                    document.getElementById(
+                        "files-drive-readiness"
+                    );
+
+                if (
+                    waitingTapeReadiness.state
+                    === "ready"
+                ) {
+                    startButton.textContent =
+                        "Tape Ready";
+
+                    if (driveStatus) {
+                        driveStatus.innerHTML =
+                            "<strong>Drive status:</strong> "
+                            + "Required cartridge ready.";
+                    }
+
+                } else if (
+                    waitingTapeReadiness.state
+                    === "probing"
+                ) {
+                    startButton.textContent =
+                        "Identifying Tape...";
+
+                    if (driveStatus) {
+                        driveStatus.innerHTML =
+                            "<strong>Drive status:</strong> "
+                            + "Identifying loaded cartridge.";
+                    }
+
+                } else if (
+                    waitingTapeReadiness.state
+                    === "wrong"
+                ) {
+                    startButton.textContent =
+                        "Wrong Tape";
+
+                    if (driveStatus) {
+                        driveStatus.innerHTML =
+                            "<strong>Drive status:</strong> "
+                            + "Wrong cartridge inserted.";
+                    }
+
+                } else {
+                    startButton.textContent =
+                        "Tape Not Ready";
+
+                    if (driveStatus) {
+                        driveStatus.innerHTML =
+                            "<strong>Drive status:</strong> "
+                            + "Waiting for required cartridge.";
+                    }
+                }
 
             } else if (
                 operation.status
@@ -1274,35 +1323,136 @@
                 ?? requiredTapes[0].ltfs_uuid
                 ?? requiredTapes[0];
 
+            const liveStateApplies =
+                String(
+                    waitingTapeReadiness
+                        .requiredTapeLabel
+                    || ""
+                ) === String(
+                    requiredTapeLabel
+                );
+
+            const loadedTapeLabel =
+                liveStateApplies
+                ? waitingTapeReadiness
+                    .loadedTapeLabel
+                : (
+                    result.loaded_tape
+                    && result.loaded_tape !== "-"
+                    ? result.loaded_tape
+                    : null
+                );
+
+            const wrongTape =
+                liveStateApplies
+                ? waitingTapeReadiness.state
+                    === "wrong"
+                : Boolean(
+                    result.wrong_tape
+                );
+
+            const requiredTapeReady =
+                liveStateApplies
+                && waitingTapeReadiness.state
+                    === "ready";
+
+            const requiredTapeBadge = `
+                <span class="tape-badge">
+                    ${escapeHtml(requiredTapeLabel)}
+                </span>
+            `;
+
+            const loadedTapeBadge =
+                loadedTapeLabel
+                ? `
+                    <span class="tape-badge">
+                        ${escapeHtml(loadedTapeLabel)}
+                    </span>
+                `
+                : `
+                    <span class="muted">
+                        None
+                    </span>
+                `;
+
             tapesHtml = `
                 <div
                     style="
                         margin-top: 14px;
                         padding: 14px;
-                        border: 1px solid #3b82f6;
-                        background: rgba(59, 130, 246, 0.08);
-                        line-height: 1.6;
+                        border: 1px solid ${
+                            wrongTape
+                            ? "#5a3434"
+                            : "#304158"
+                        };
+                        background: #101a28;
+                        line-height: 1.8;
                     "
                 >
                     <div
                         style="
                             font-size: 18px;
                             font-weight: 700;
-                            margin-bottom: 4px;
+                            margin-bottom: 10px;
                         "
                     >
-                        INSERT TAPE:
-                        ${escapeHtml(requiredTapeLabel)}
+                        ${
+                            requiredTapeReady
+                            ? "Required Cartridge Ready"
+                            : wrongTape
+                                ? "Wrong Cartridge Inserted"
+                                : "Insert Required Cartridge"
+                        }
                     </div>
 
                     <div>
-                        TapeBox is waiting for this cartridge.
-                        Insert
                         <strong>
-                            ${escapeHtml(requiredTapeLabel)}
+                            Required Tape:
                         </strong>
-                        into the tape drive, then click
-                        <strong>Continue Restore</strong>.
+
+                        ${requiredTapeBadge}
+                    </div>
+
+                    <div
+                        style="
+                            margin-top: 6px;
+                        "
+                    >
+                        <strong>
+                            Inserted Tape:
+                        </strong>
+
+                        ${loadedTapeBadge}
+                    </div>
+
+                    <div
+                        style="
+                            margin-top: 10px;
+                        "
+                    >
+                        ${
+                            requiredTapeReady
+                            ? `
+                                TapeBox detected the required
+                                cartridge. Click
+                                <strong>
+                                    Continue Restore
+                                </strong>
+                                to continue the restore.
+                            `
+                            : wrongTape
+                                ? `
+                                    TapeBox detected the wrong
+                                    cartridge. Insert
+                                    ${requiredTapeBadge}
+                                    to continue the restore.
+                                `
+                                : `
+                                    Insert
+                                    ${requiredTapeBadge}
+                                    into the tape drive.
+                                `
+                        }
                     </div>
                 </div>
 
@@ -1315,8 +1465,25 @@
                         type="button"
                         id="files-continue-restore-button"
                         class="button"
+                        ${
+                            waitingTapeReadiness.state
+                            === "ready"
+                            ? ""
+                            : "disabled"
+                        }
                     >
-                        Continue Restore
+                        ${
+                            waitingTapeReadiness.state
+                            === "ready"
+                            ? "Continue Restore"
+                            : waitingTapeReadiness.state
+                                === "probing"
+                                ? "Identifying Tape..."
+                                : waitingTapeReadiness.state
+                                    === "wrong"
+                                    ? "Wrong Tape"
+                                    : "Tape Not Ready"
+                        }
                     </button>
                 </div>
             `;
@@ -1427,6 +1594,196 @@
                 "click",
                 continueSelectedRestore
             );
+
+            if (
+                operation.status
+                === "waiting_for_tape"
+                && requiredTapes.length
+            ) {
+                const requiredTapeLabel =
+                    requiredTapes[0].label
+                    ?? requiredTapes[0].tape_label
+                    ?? requiredTapes[0].ltfs_uuid
+                    ?? requiredTapes[0];
+
+                if (!waitingTapeStatusTimer) {
+                    updateWaitingTapeReadiness(
+                        requiredTapeLabel
+                    );
+                }
+            }
+        }
+    }
+
+
+    async function updateWaitingTapeReadiness(
+        requiredTapeLabel
+    ) {
+        if (waitingTapeStatusActive) {
+            return;
+        }
+
+        waitingTapeStatusActive = true;
+
+        try {
+            const button =
+                document.getElementById(
+                    "files-continue-restore-button"
+                );
+
+            if (!button) {
+                return;
+            }
+
+            const response =
+                await fetch(
+                    "/api/tape/status"
+                );
+
+            const data =
+                await response.json();
+
+            if (
+                !response.ok
+                || !data.success
+            ) {
+                throw new Error(
+                    data.error
+                    || "Unable to identify cartridge."
+                );
+            }
+
+            const cartridge =
+                data.cartridge || {};
+
+            const state =
+                String(
+                    data.state
+                    || cartridge.state
+                    || ""
+                );
+
+            if (
+                state === "probing"
+            ) {
+                waitingTapeReadiness = {
+                    requiredTapeLabel:
+                        requiredTapeLabel,
+                    loadedTapeLabel: null,
+                    state: "probing",
+                };
+
+                button.disabled = true;
+                button.textContent =
+                    "Identifying Tape...";
+
+            } else {
+                const loadedLabel =
+                    cartridge.catalog_label
+                    || cartridge.label
+                    || null;
+
+                const knownCataloged =
+                    cartridge.state
+                    === "known_cataloged"
+                    && Boolean(
+                        cartridge.cataloged
+                    );
+
+                const correctTape =
+                    knownCataloged
+                    && loadedLabel
+                    && String(
+                        loadedLabel
+                    ) === String(
+                        requiredTapeLabel
+                    );
+
+                if (correctTape) {
+                    waitingTapeReadiness = {
+                        requiredTapeLabel:
+                            requiredTapeLabel,
+                        loadedTapeLabel:
+                            loadedLabel,
+                        state: "ready",
+                    };
+
+                    button.disabled = false;
+                    button.textContent =
+                        "Continue Restore";
+
+                } else if (
+                    loadedLabel
+                    && cartridge.loaded !== false
+                ) {
+                    waitingTapeReadiness = {
+                        requiredTapeLabel:
+                            requiredTapeLabel,
+                        loadedTapeLabel:
+                            loadedLabel,
+                        state: "wrong",
+                    };
+
+                    button.disabled = true;
+                    button.textContent =
+                        "Wrong Tape";
+
+                } else {
+                    waitingTapeReadiness = {
+                        requiredTapeLabel:
+                            requiredTapeLabel,
+                        loadedTapeLabel: null,
+                        state: "not_ready",
+                    };
+
+                    button.disabled = true;
+                    button.textContent =
+                        "Tape Not Ready";
+                }
+            }
+
+        } catch (error) {
+            const button =
+                document.getElementById(
+                    "files-continue-restore-button"
+                );
+
+            waitingTapeReadiness = {
+                requiredTapeLabel:
+                    requiredTapeLabel,
+                loadedTapeLabel: null,
+                state: "not_ready",
+            };
+
+            if (button) {
+                button.disabled = true;
+                button.textContent =
+                    "Tape Not Ready";
+            }
+
+        } finally {
+            waitingTapeStatusActive = false;
+
+            const button =
+                document.getElementById(
+                    "files-continue-restore-button"
+                );
+
+            if (
+                activeOperationId
+                && button
+            ) {
+                waitingTapeStatusTimer =
+                    setTimeout(
+                        () =>
+                            updateWaitingTapeReadiness(
+                                requiredTapeLabel
+                            ),
+                        2000
+                    );
+            } else {
+                waitingTapeStatusTimer = null;
+            }
         }
     }
 
@@ -1472,6 +1829,27 @@
                 !response.ok
                 || !data.success
             ) {
+                if (
+                    response.status === 409
+                    && data.probe_busy
+                ) {
+                    if (button) {
+                        button.disabled = true;
+                        button.textContent =
+                            "Identifying Tape...";
+                    }
+
+                    await new Promise(
+                        resolve =>
+                            setTimeout(
+                                resolve,
+                                1000
+                            )
+                    );
+
+                    return continueSelectedRestore();
+                }
+
                 throw new Error(
                     data.error
                     || "Unable to continue restore."
@@ -1724,8 +2102,14 @@
 
         if (startButton) {
             startButton.disabled = true;
-            startButton.textContent =
-                "Starting...";
+
+            if (
+                startButton.textContent
+                !== "Identifying Tape..."
+            ) {
+                startButton.textContent =
+                    "Starting...";
+            }
         }
 
         setSelectionLocked(
@@ -1756,6 +2140,58 @@
                 !response.ok
                 || !data.success
             ) {
+                if (
+                    response.status === 409
+                    && data.probe_busy
+                ) {
+                    const container =
+                        document.getElementById(
+                            "files-restore-operation"
+                        );
+
+                    if (container) {
+                        container.innerHTML = `
+                            <div
+                                style="
+                                    font-weight: 700;
+                                "
+                            >
+                                Identifying Cartridge
+                            </div>
+
+                            <div
+                                style="
+                                    margin-top: 6px;
+                                "
+                            >
+                                TapeBox is identifying the
+                                loaded cartridge. Restore will
+                                start automatically when the
+                                drive is ready.
+                            </div>
+                        `;
+
+                        container.style.display =
+                            "block";
+                    }
+
+                    if (startButton) {
+                        startButton.disabled = true;
+                        startButton.textContent =
+                            "Identifying Tape...";
+                    }
+
+                    await new Promise(
+                        resolve =>
+                            setTimeout(
+                                resolve,
+                                1000
+                            )
+                    );
+
+                    return startSelectedRestore();
+                }
+
                 throw new Error(
                     data.error
                     || "Unable to start restore."
