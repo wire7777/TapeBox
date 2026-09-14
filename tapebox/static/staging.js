@@ -55,6 +55,47 @@ function formatElapsed(seconds) {
 }
 
 
+function setArchiveProgressIndeterminate(active) {
+    const progress =
+        document.getElementById(
+            "archive-progress"
+        );
+
+    const progressBar =
+        document.getElementById(
+            "archive-progress-bar"
+        );
+
+    const progressPercent =
+        document.getElementById(
+            "archive-progress-percent"
+        );
+
+    if (!progress || !progressBar) {
+        return;
+    }
+
+    if (active) {
+        progress.style.display = "block";
+
+        progressBar.classList.add(
+            "tapebox-progress-indeterminate"
+        );
+
+        if (progressPercent) {
+            progressPercent.textContent =
+                "Working...";
+        }
+
+        return;
+    }
+
+    progressBar.classList.remove(
+        "tapebox-progress-indeterminate"
+    );
+}
+
+
 function renderTransfer(detail, transfer) {
     if (!detail || !transfer) {
         return false;
@@ -98,6 +139,10 @@ function renderTransfer(detail, transfer) {
     }
 
     if (progressBar) {
+        progressBar.classList.remove(
+            "tapebox-progress-indeterminate"
+        );
+
         progressBar.style.width =
             `${percent}%`;
     }
@@ -488,11 +533,43 @@ window.monitorTapeBoxArchiveOperation =
                         "Working...";
                 }
 
-                const hasTransfer =
-                    renderTransfer(
-                        detail,
-                        operation.transfer
+                const activityType =
+                    operation.activity_type || null;
+
+                const archiveDrivePhases =
+                    new Set(
+                        [
+                            "preparing",
+                            "finalizing_file",
+                            "finalizing",
+                            "unmounting",
+                            "updating_manifest",
+                            "ejecting"
+                        ]
                     );
+
+                const driveWorking =
+                    operation.status === "running"
+                    && archiveDrivePhases.has(
+                        activityType
+                    );
+
+                let hasTransfer = false;
+
+                if (
+                    activityType === "copying"
+                    && operation.transfer
+                ) {
+                    hasTransfer =
+                        renderTransfer(
+                            detail,
+                            operation.transfer
+                        );
+                }
+
+                setArchiveProgressIndeterminate(
+                    driveWorking
+                );
 
                 if (
                     !hasTransfer &&
@@ -543,6 +620,45 @@ window.monitorTapeBoxArchiveOperation =
                         operation.status ===
                             "completed"
                     ) {
+                        if (operation.transfer) {
+                            renderTransfer(
+                                detail,
+                                operation.transfer
+                            );
+                        }
+
+                        const progressBar =
+                            document.getElementById(
+                                "archive-progress-bar"
+                            );
+
+                        const progressPercent =
+                            document.getElementById(
+                                "archive-progress-percent"
+                            );
+
+                        if (progressBar) {
+                            progressBar.classList.remove(
+                                "tapebox-progress-indeterminate"
+                            );
+
+                            progressBar.style.width =
+                                "100%";
+                        }
+
+                        if (progressPercent) {
+                            progressPercent.textContent =
+                                "100%";
+                        }
+
+                        if (detail) {
+                            detail.textContent =
+                                detail.textContent.replace(
+                                    /^Phase: .*$/m,
+                                    "Phase: Complete"
+                                );
+                        }
+
                         document
                             .querySelectorAll(
                                 ".staging-select-checkbox:checked"
@@ -1825,6 +1941,11 @@ window.monitorTapeBoxArchiveOperation =
             "staging-auto-eject-toggle"
         );
 
+    const discardArchiveButton =
+        document.getElementById(
+            "staging-discard-archive-button"
+        );
+
     const deleteSelectedButton =
         document.getElementById(
             "staging-delete-selected-button"
@@ -1855,6 +1976,7 @@ window.monitorTapeBoxArchiveOperation =
         || !clearAllButton
         || !archiveSelectedButton
         || !autoEjectToggle
+        || !discardArchiveButton
         || !deleteSelectedButton
         || !summary
         || !planPanel
@@ -2278,6 +2400,103 @@ window.monitorTapeBoxArchiveOperation =
     );
 
 
+    discardArchiveButton.addEventListener(
+        "click",
+        async () => {
+            const operationId =
+                archiveSelectedButton.dataset
+                    .archiveOperationId || "";
+
+            if (!operationId) {
+                discardArchiveButton.style.display =
+                    "none";
+                return;
+            }
+
+            const confirmed =
+                await window.tapeboxConfirm({
+                    title:
+                        "Discard Prepared Archive?",
+
+                    message:
+                        "Discard this prepared archive?",
+
+                    warning:
+                        "No tape data will be deleted. "
+                        + "Your original staging files "
+                        + "will remain unchanged.",
+
+                    confirmText:
+                        "Discard Prepared Archive",
+
+                    danger: true,
+                });
+
+            if (!confirmed) {
+                return;
+            }
+
+            const originalText =
+                discardArchiveButton.textContent;
+
+            discardArchiveButton.disabled = true;
+            discardArchiveButton.textContent =
+                "Discarding...";
+
+            try {
+                const response = await fetch(
+                    `/api/operations/${
+                        operationId
+                    }/archive-discard`,
+                    {
+                        method: "POST",
+                        cache: "no-store",
+                    }
+                );
+
+                const data =
+                    await response.json();
+
+                if (
+                    !response.ok
+                    || !data.success
+                ) {
+                    throw new Error(
+                        data.error
+                        || (
+                            "Could not discard "
+                            + "prepared archive."
+                        )
+                    );
+                }
+
+                stopWaitingTapeStatus();
+
+                window.location.reload();
+
+            } catch (error) {
+                await window.tapeboxAlert({
+                    title:
+                        "Discard Failed",
+
+                    message:
+                        error.message
+                        || String(error),
+
+                    type:
+                        "error",
+                });
+
+                discardArchiveButton.disabled =
+                    false;
+
+                discardArchiveButton.textContent =
+                    originalText;
+            }
+        }
+    );
+
+
     archiveSelectedButton.addEventListener(
         "click",
         async () => {
@@ -2306,6 +2525,9 @@ window.monitorTapeBoxArchiveOperation =
             //
             if (preparedOperationId) {
                 stopWaitingTapeStatus();
+
+                discardArchiveButton.style.display =
+                    "none";
 
                 archiveSelectedButton.disabled = true;
                 archiveSelectedButton.textContent =
@@ -2514,6 +2736,12 @@ window.monitorTapeBoxArchiveOperation =
                 }
 
                 autoEjectToggle.disabled = true;
+
+                discardArchiveButton.style.display =
+                    "inline-block";
+
+                discardArchiveButton.disabled =
+                    false;
 
                 archiveSelectedButton.textContent =
                     "Start Archive";
@@ -2807,6 +3035,12 @@ window.monitorTapeBoxArchiveOperation =
                 operation.status
                 === "waiting_for_tape"
             ) {
+                discardArchiveButton.style.display =
+                    "inline-block";
+
+                discardArchiveButton.disabled =
+                    false;
+
                 archiveSelectedButton.disabled =
                     false;
 
@@ -2821,6 +3055,9 @@ window.monitorTapeBoxArchiveOperation =
 
                 return;
             }
+
+            discardArchiveButton.style.display =
+                "none";
 
             archiveSelectedButton.disabled =
                 true;

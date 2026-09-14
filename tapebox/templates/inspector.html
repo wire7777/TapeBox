@@ -907,6 +907,10 @@ Tape Inspector - TapeBox
             )
         );
 
+        copyProgressBar.classList.remove(
+            "tapebox-progress-indeterminate"
+        );
+
         copyProgressPercent.textContent =
             percent.toFixed(1) + "%";
 
@@ -2014,10 +2018,14 @@ Tape Inspector - TapeBox
             copyProgressPanel.hidden = false;
             copyProgressTitle.textContent =
                 "Preparing Copy";
+
+            copyProgressBar.classList.add(
+                "tapebox-progress-indeterminate"
+            );
+
             copyProgressPercent.textContent =
-                "0%";
-            copyProgressBar.style.width =
-                "0%";
+                "Working...";
+
             copyProgressFile.textContent =
                 "Preparing selected items...";
             copyProgressFiles.textContent =

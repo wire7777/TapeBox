@@ -18,7 +18,7 @@ IMPORT_MOUNTPOINT = Path(
     "/mnt/tapebox/ltfs-import"
 )
 
-DEFAULT_SG_DEVICE = "/dev/sg0"
+DEFAULT_SG_DEVICE = "/dev/tapebox-drive-sg"
 
 
 def _generation_number(value):

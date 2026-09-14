@@ -1666,3 +1666,75 @@ select option {
 [hidden] {
     display: none !important;
 }
+
+
+/* ==========================================================================
+   TapeBox shared fluid progress behavior
+   ========================================================================== */
+
+#archive-progress-bar,
+#archive-job-progress-bar,
+#staging-upload-progress-bar,
+#copy-progress-bar,
+#rescan-scsi-progress-bar,
+.restore-progress-bar {
+    transition: width 0.4s ease-out !important;
+    will-change: width;
+}
+
+
+/*
+ * Indeterminate state.
+ *
+ * Used while the tape drive is loading, mounting, seeking,
+ * preparing LTFS, or otherwise working before real byte
+ * progress is available.
+ */
+.tapebox-progress-indeterminate {
+    width: 100% !important;
+
+    background-image:
+        linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.16) 25%,
+            transparent 25%,
+            transparent 50%,
+            rgba(255, 255, 255, 0.16) 50%,
+            rgba(255, 255, 255, 0.16) 75%,
+            transparent 75%,
+            transparent
+        ) !important;
+
+    background-size: 40px 40px !important;
+
+    animation:
+        tapebox-progress-stripes
+        0.9s linear infinite;
+}
+
+
+@keyframes tapebox-progress-stripes {
+    from {
+        background-position: 40px 0;
+    }
+
+    to {
+        background-position: 0 0;
+    }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+    #archive-progress-bar,
+    #archive-job-progress-bar,
+    #staging-upload-progress-bar,
+    #copy-progress-bar,
+    #rescan-scsi-progress-bar,
+    .restore-progress-bar {
+        transition: none !important;
+    }
+
+    .tapebox-progress-indeterminate {
+        animation: none;
+    }
+}

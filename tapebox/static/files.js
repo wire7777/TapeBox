@@ -709,11 +709,64 @@
             operation.result || {};
 
         const transfer =
-            operation.transfer;
+            operation.transfer || null;
+
+        const activityType =
+            operation.activity_type || null;
+
+        const driveActivityTypes =
+            new Set(
+                [
+                    "drive_waiting",
+                    "drive_ready",
+                    "mounting",
+                    "mounted",
+                    "unmounting",
+                    "ejecting",
+                ]
+            );
+
+        const driveWorking =
+            operation.status === "running"
+            && driveActivityTypes.has(
+                activityType
+            );
 
         let transferHtml = "";
 
-        if (transfer) {
+        if (driveWorking) {
+            transferHtml = `
+                <div
+                    style="
+                        margin-top: 10px;
+                        line-height: 1.6;
+                    "
+                >
+                    <div>
+                        <strong>
+                            Current Activity:
+                        </strong>
+                        ${escapeHtml(
+                            operation.message
+                            || "Tape drive working..."
+                        )}
+                    </div>
+
+                    <div
+                        class="restore-progress-track"
+                        style="margin-top: 8px;"
+                    >
+                        <div
+                            class="
+                                restore-progress-bar
+                                tapebox-progress-indeterminate
+                            "
+                        ></div>
+                    </div>
+                </div>
+            `;
+
+        } else if (transfer) {
             const copied =
                 Number(
                     transfer.bytes_written
@@ -733,6 +786,15 @@
                         total > 0
                         ? copied / total * 100
                         : 0
+                    )
+                );
+
+            const clampedPercent =
+                Math.min(
+                    100,
+                    Math.max(
+                        0,
+                        percent
                     )
                 );
 
@@ -802,6 +864,15 @@
                         line-height: 1.6;
                     "
                 >
+                    <div
+                        style="
+                            font-weight: 700;
+                            margin-bottom: 4px;
+                        "
+                    >
+                        Current File
+                    </div>
+
                     ${
                         filename
                         ? `
@@ -820,13 +891,7 @@
                         ${formatBytes(copied)}
                         /
                         ${formatBytes(total)}
-                        (${Math.min(
-                            100,
-                            Math.max(
-                                0,
-                                percent
-                            )
-                        ).toFixed(1)}%)
+                        (${clampedPercent.toFixed(1)}%)
                     </div>
 
                     <div
@@ -835,15 +900,9 @@
                     >
                         <div
                             class="restore-progress-bar"
-                            style="width: ${
-                                Math.min(
-                                    100,
-                                    Math.max(
-                                        0,
-                                        percent
-                                    )
-                                )
-                            }%;"
+                            style="
+                                width: ${clampedPercent}%;
+                            "
                         ></div>
                     </div>
 
@@ -852,6 +911,174 @@
                 </div>
             `;
         }
+
+        let overallHtml = "";
+
+        let overallWritten = 0;
+        let overallTotal = 0;
+        let overallPercent = 0;
+        let filesCompleted = null;
+        let filesTotal = null;
+
+        if (transfer) {
+            overallWritten =
+                Number(
+                    transfer.overall_bytes_written
+                    ?? 0
+                );
+
+            overallTotal =
+                Number(
+                    transfer.overall_bytes_total
+                    ?? 0
+                );
+
+            overallPercent =
+                Number(
+                    transfer.overall_percent
+                    ?? (
+                        overallTotal > 0
+                        ? (
+                            overallWritten
+                            / overallTotal
+                            * 100
+                        )
+                        : 0
+                    )
+                );
+
+            if (
+                transfer.files_completed
+                !== undefined
+                && transfer.files_completed
+                !== null
+            ) {
+                filesCompleted =
+                    Number(
+                        transfer.files_completed
+                    );
+            }
+
+            if (
+                transfer.files_total
+                !== undefined
+                && transfer.files_total
+                !== null
+            ) {
+                filesTotal =
+                    Number(
+                        transfer.files_total
+                    );
+            }
+        }
+
+        if (
+            operation.status === "completed"
+        ) {
+            overallPercent = 100;
+
+            if (
+                overallTotal > 0
+            ) {
+                overallWritten =
+                    overallTotal;
+            }
+
+            if (
+                result.files_total
+                !== undefined
+            ) {
+                filesTotal =
+                    Number(
+                        result.files_total
+                    );
+            }
+
+            if (
+                result.files_completed
+                !== undefined
+            ) {
+                filesCompleted =
+                    Number(
+                        result.files_completed
+                    );
+            }
+        }
+
+        const clampedOverallPercent =
+            Math.min(
+                100,
+                Math.max(
+                    0,
+                    overallPercent
+                )
+            );
+
+        const overallBytesHtml =
+            overallTotal > 0
+            ? `
+                <div>
+                    <strong>Overall:</strong>
+                    ${formatBytes(overallWritten)}
+                    /
+                    ${formatBytes(overallTotal)}
+                    (${clampedOverallPercent.toFixed(1)}%)
+                </div>
+            `
+            : `
+                <div>
+                    <strong>Overall:</strong>
+                    ${clampedOverallPercent.toFixed(1)}%
+                </div>
+            `;
+
+        const overallFilesHtml =
+            Number.isFinite(filesCompleted)
+            && Number.isFinite(filesTotal)
+            && filesTotal > 0
+            ? `
+                <div>
+                    <strong>Files:</strong>
+                    ${filesCompleted}
+                    of
+                    ${filesTotal}
+                </div>
+            `
+            : "";
+
+        overallHtml = `
+            <div
+                style="
+                    margin-top: 14px;
+                    line-height: 1.6;
+                "
+            >
+                <div
+                    style="
+                        font-weight: 700;
+                        margin-bottom: 4px;
+                    "
+                >
+                    Overall Restore
+                </div>
+
+                ${overallBytesHtml}
+
+                <div
+                    class="restore-progress-track"
+                    style="margin-top: 8px;"
+                >
+                    <div
+                        class="restore-progress-bar"
+                        style="
+                            width: ${clampedOverallPercent}%;
+                        "
+                    ></div>
+                </div>
+
+                ${overallFilesHtml}
+            </div>
+        `;
 
         let alreadyRestoredHtml = "";
 
@@ -1017,6 +1244,7 @@
 
             ${alreadyRestoredHtml}
             ${transferHtml}
+            ${overallHtml}
             ${tapesHtml}
 
             ${

@@ -74,6 +74,10 @@ def _report_transfer_progress(
     part_number=None,
     parts_total=None,
     base_bytes=0,
+    overall_base_bytes=None,
+    overall_bytes_total=None,
+    files_completed=None,
+    files_total=None,
 ):
     """
     Report measured restore throughput.
@@ -131,6 +135,48 @@ def _report_transfer_progress(
             * 100.0,
         )
 
+    overall_details = {}
+
+    if (
+        overall_base_bytes is not None
+        and overall_bytes_total is not None
+    ):
+        overall_written = min(
+            int(overall_bytes_total),
+            int(overall_base_bytes)
+            + int(logical_written),
+        )
+
+        overall_percent = 0.0
+
+        if int(overall_bytes_total) > 0:
+            overall_percent = min(
+                100.0,
+                overall_written
+                / int(overall_bytes_total)
+                * 100.0,
+            )
+
+        overall_details.update(
+            {
+                "overall_bytes_written": overall_written,
+                "overall_bytes_total": int(
+                    overall_bytes_total
+                ),
+                "overall_percent": overall_percent,
+            }
+        )
+
+        if files_completed is not None:
+            overall_details[
+                "files_completed"
+            ] = int(files_completed)
+
+        if files_total is not None:
+            overall_details[
+                "files_total"
+            ] = int(files_total)
+
     _report_progress(
         progress,
         f"Restoring {filename}: "
@@ -147,6 +193,7 @@ def _report_transfer_progress(
         elapsed_seconds=elapsed,
         eta_seconds=eta_seconds,
         percent=percent,
+        **overall_details,
     )
 
 
@@ -268,6 +315,10 @@ def _restore_spanned_from_mounted_tape(
     loaded_uuid,
     loaded_name=None,
     progress=None,
+    overall_base_bytes=None,
+    overall_bytes_total=None,
+    files_completed=None,
+    files_total=None,
 ):
     """
     Restore the next eligible physical part(s) of one spanned
@@ -637,6 +688,44 @@ def _restore_spanned_from_mounted_tape(
                         part_start_offset
                     )
 
+                    transfer_start_details = {}
+
+                    if (
+                        overall_base_bytes is not None
+                        and overall_bytes_total is not None
+                    ):
+                        overall_written = min(
+                            int(overall_bytes_total),
+                            int(overall_base_bytes)
+                            + int(base_bytes),
+                        )
+
+                        transfer_start_details = {
+                            "overall_bytes_written": (
+                                overall_written
+                            ),
+                            "overall_bytes_total": int(
+                                overall_bytes_total
+                            ),
+                            "overall_percent": (
+                                overall_written
+                                / int(overall_bytes_total)
+                                * 100.0
+                                if int(overall_bytes_total) > 0
+                                else 0.0
+                            ),
+                            "files_completed": (
+                                int(files_completed)
+                                if files_completed is not None
+                                else None
+                            ),
+                            "files_total": (
+                                int(files_total)
+                                if files_total is not None
+                                else None
+                            ),
+                        }
+
                     _report_progress(
                         progress,
                         (
@@ -661,6 +750,7 @@ def _restore_spanned_from_mounted_tape(
                             if row["size_bytes"]
                             else 0.0
                         ),
+                        **transfer_start_details,
                     )
 
                     with open(
@@ -707,6 +797,18 @@ def _restore_spanned_from_mounted_tape(
                                 ),
                                 base_bytes=(
                                     base_bytes
+                                ),
+                                overall_base_bytes=(
+                                    overall_base_bytes
+                                ),
+                                overall_bytes_total=(
+                                    overall_bytes_total
+                                ),
+                                files_completed=(
+                                    files_completed
+                                ),
+                                files_total=(
+                                    files_total
                                 ),
                             )
 
@@ -2115,6 +2217,18 @@ def _restore_catalog_files(
 
     files = list(files or [])
 
+    overall_bytes_total = sum(
+        int(row["size_bytes"] or 0)
+        for row in files
+    )
+
+    file_size_by_id = {
+        int(row["id"]): int(
+            row["size_bytes"] or 0
+        )
+        for row in files
+    }
+
     if not files:
         return {
             "success": False,
@@ -2461,6 +2575,7 @@ def _restore_catalog_files(
     _report_progress(
         progress,
         "Waiting for tape drive to become ready...",
+        type="drive_waiting",
     )
 
     status = get_tape_status(
@@ -2679,6 +2794,20 @@ def _restore_catalog_files(
                     time.monotonic()
                 )
 
+                overall_completed_ids = (
+                    completed_ids
+                    | restored_ids
+                )
+
+                overall_base_bytes = sum(
+                    file_size_by_id.get(
+                        int(file_id),
+                        0,
+                    )
+                    for file_id
+                    in overall_completed_ids
+                )
+
                 _report_progress(
                     progress,
                     f"Restoring {row['filename']}...",
@@ -2689,6 +2818,25 @@ def _restore_catalog_files(
                     bytes_written=0,
                     bytes_total=row["size_bytes"],
                     percent=0.0,
+                    overall_bytes_written=(
+                        overall_base_bytes
+                    ),
+                    overall_bytes_total=(
+                        overall_bytes_total
+                    ),
+                    overall_percent=(
+                        (
+                            overall_base_bytes
+                            / overall_bytes_total
+                        )
+                        * 100.0
+                        if overall_bytes_total
+                        else 0.0
+                    ),
+                    files_completed=len(
+                        overall_completed_ids
+                    ),
+                    files_total=len(files),
                 )
 
                 try:
@@ -2728,6 +2876,16 @@ def _restore_catalog_files(
                                     started_at=(
                                         transfer_started
                                     ),
+                                    overall_base_bytes=(
+                                        overall_base_bytes
+                                    ),
+                                    overall_bytes_total=(
+                                        overall_bytes_total
+                                    ),
+                                    files_completed=len(
+                                        overall_completed_ids
+                                    ),
+                                    files_total=len(files),
                                 )
 
                             dst.flush()
@@ -2834,6 +2992,20 @@ def _restore_catalog_files(
                     exist_ok=True,
                 )
 
+                overall_completed_ids = (
+                    completed_ids
+                    | restored_ids
+                )
+
+                overall_base_bytes = sum(
+                    file_size_by_id.get(
+                        int(completed_file_id),
+                        0,
+                    )
+                    for completed_file_id
+                    in overall_completed_ids
+                )
+
                 span_result = (
                     _restore_spanned_from_mounted_tape(
                         row,
@@ -2841,6 +3013,16 @@ def _restore_catalog_files(
                         loaded_uuid,
                         loaded_name,
                         progress=progress,
+                        overall_base_bytes=(
+                            overall_base_bytes
+                        ),
+                        overall_bytes_total=(
+                            overall_bytes_total
+                        ),
+                        files_completed=len(
+                            overall_completed_ids
+                        ),
+                        files_total=len(files),
                     )
                 )
 

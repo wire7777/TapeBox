@@ -374,8 +374,27 @@ def refresh_tape_manifest(
     # LTFS unmount. mount_ltfs() also contains its own retry logic.
     time.sleep(1.0)
 
+    sg_device = "/dev/tapebox-drive-sg"
+
+    if not Path(sg_device).exists():
+        drives = discover_drives()
+
+        if not drives:
+            return {
+                "success": False,
+                "error": "No tape drive was discovered for manifest refresh.",
+            }
+
+        sg_device = drives[0].get("sg_device")
+
+        if not sg_device:
+            return {
+                "success": False,
+                "error": "Tape drive has no SCSI generic device.",
+            }
+
     mount_result = mount_ltfs(
-        "/dev/sg0",
+        sg_device,
         mountpoint,
         timeout=120,
     )
@@ -2864,6 +2883,17 @@ def archive_folder_job(
     #   -> remount and refresh manifest
     #
     if catalog_records or spanned_part_records:
+        if progress_callback:
+            try:
+                progress_callback({
+                    "phase": "updating_manifest",
+                    "message": (
+                        "Updating tape recovery manifest..."
+                    ),
+                })
+            except Exception:
+                pass
+
         manifest_result = refresh_tape_manifest(
             tape
         )
@@ -2937,6 +2967,17 @@ def archive_folder_job(
     if manifest_result.get("success") and (
         not all_complete or auto_eject
     ):
+        if progress_callback:
+            try:
+                progress_callback({
+                    "phase": "ejecting",
+                    "message": (
+                        "Ejecting cartridge..."
+                    ),
+                })
+            except Exception:
+                pass
+
         eject_result = eject_tape()
 
     return {

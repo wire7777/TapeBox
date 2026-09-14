@@ -92,6 +92,7 @@ from tapebox.file_times import (
 from tapebox.tape import (
     discover_drives,
     get_tape_status,
+    get_tape_partition_capacity,
     inspect_ltfs,
     scan_ltfs_files,
     mount_ltfs_inspector,
@@ -227,6 +228,9 @@ def _operation_snapshot(operation):
             if operation["transfer"]
             else None
         ),
+        "activity_type": operation.get(
+            "activity_type"
+        ),
         "result": operation["result"],
     }
 
@@ -260,6 +264,9 @@ def _restore_worker(
                 )
 
                 operation["message"] = message
+                operation["activity_type"] = (
+                    event.get("type")
+                )
 
                 if (
                     event.get("type")
@@ -295,6 +302,7 @@ def _restore_worker(
                 message = str(event)
 
                 operation["message"] = message
+                operation["activity_type"] = None
                 operation["messages"].append(
                     message
                 )
@@ -447,6 +455,9 @@ def _selected_restore_worker(
                 )
 
                 operation["message"] = message
+                operation["activity_type"] = (
+                    event.get("type")
+                )
 
                 if (
                     event.get("type")
@@ -477,6 +488,7 @@ def _selected_restore_worker(
                 message = str(event)
 
                 operation["message"] = message
+                operation["activity_type"] = None
                 operation["messages"].append(
                     message
                 )
@@ -618,6 +630,9 @@ def _archive_staging_worker(
             ]
 
             operation["status"] = "running"
+            operation["activity_type"] = (
+                "preparing"
+            )
             operation["message"] = (
                 "Archiving to tape..."
             )
@@ -635,13 +650,22 @@ def _archive_staging_worker(
                 if operation is None:
                     return
 
-                operation["transfer"] = dict(
-                    progress
-                )
-
                 phase = progress.get(
                     "phase"
                 )
+
+                operation["activity_type"] = (
+                    phase
+                )
+
+                if phase in (
+                    "copying",
+                    "finalizing_file",
+                    "finalizing",
+                ):
+                    operation["transfer"] = dict(
+                        progress
+                    )
 
                 filename = progress.get(
                     "filename"
@@ -666,6 +690,11 @@ def _archive_staging_worker(
                         f"Finalizing {filename}..."
                         if filename
                         else "Finalizing archive..."
+                    )
+
+                elif progress.get("message"):
+                    operation["message"] = (
+                        progress["message"]
                     )
 
         with OPERATION_STATE_LOCK:
@@ -3402,11 +3431,15 @@ def _resolve_staging_path(relative_path=""):
         )
 
     #
-    # TapeBox private resumable-upload state.
+    # TapeBox private staging state must never be exposed through
+    # the normal staging browser.
     #
     if (
         relative.parts
-        and relative.parts[0] == ".uploads"
+        and relative.parts[0] in {
+            ".uploads",
+            ".tapebox-jobs",
+        }
     ):
         raise ValueError(
             "TapeBox internal staging paths are not accessible."
@@ -3498,12 +3531,15 @@ def staging_page():
             ),
         ):
             #
-            # TapeBox internal resumable-upload state must never
-            # appear as ordinary staging content.
+            # TapeBox internal state must never appear as ordinary
+            # staging content.
             #
             if (
                 target == root
-                and entry.name == ".uploads"
+                and entry.name in {
+                    ".uploads",
+                    ".tapebox-jobs",
+                }
             ):
                 continue
 
@@ -4641,6 +4677,7 @@ def _planner_media():
     """
     generation = None
     source = "default"
+    physical_used_bytes = None
 
     try:
         drives = discover_drives()
@@ -4671,6 +4708,27 @@ def _planner_media():
                     ):
                         source = "loaded_cartridge"
 
+                        sg_device = drives[0].get(
+                            "sg_device"
+                        )
+
+                        if sg_device:
+                            partition_capacity = (
+                                get_tape_partition_capacity(
+                                    sg_device=sg_device,
+                                    partition=1,
+                                )
+                            )
+
+                            if partition_capacity.get(
+                                "success"
+                            ):
+                                physical_used_bytes = (
+                                    partition_capacity.get(
+                                        "used_bytes"
+                                    )
+                                )
+
     except Exception:
         generation = None
 
@@ -4692,6 +4750,7 @@ def _planner_media():
             ]
         ),
         "source": source,
+        "physical_used_bytes": physical_used_bytes,
     }
 
 
@@ -4765,6 +4824,11 @@ def _build_archive_plan(
                 ]
             ),
             "source": "requested",
+            "physical_used_bytes": (
+                media.get("physical_used_bytes")
+                if requested_generation == media.get("generation")
+                else None
+            ),
         }
 
     capacity = media["capacity_bytes"]
@@ -4813,9 +4877,19 @@ def _build_archive_plan(
     tapes = []
 
     def new_tape():
+        tape_number = len(tapes) + 1
+
+        existing_used = 0
+
+        if tape_number == 1:
+            existing_used = int(
+                media.get("physical_used_bytes")
+                or 0
+            )
+
         tape = {
-            "number": len(tapes) + 1,
-            "used_bytes": 0,
+            "number": tape_number,
+            "used_bytes": existing_used,
             "files": 0,
             "parts": 0,
         }
@@ -5710,6 +5784,194 @@ def staging_archive_operation_api():
 
 
 @app.route(
+    "/api/operations/<operation_id>/archive-discard",
+    methods=["POST"],
+)
+def archive_operation_discard_api(
+    operation_id,
+):
+    """
+    Discard a prepared staging archive that has not started writing.
+
+    Only TapeBox's hidden selection snapshot is removed. Original
+    staging files are never deleted by this action.
+    """
+
+    global ACTIVE_TAPE_OPERATION_ID
+
+    initialize_database()
+
+    with OPERATION_STATE_LOCK:
+        operation = OPERATIONS.get(
+            operation_id
+        )
+
+        if operation is None:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Archive operation not found."
+                    ),
+                }
+            ), 404
+
+        if (
+            operation.get("type")
+            != "archive_staging_selection"
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "This operation is not a "
+                        "staging archive."
+                    ),
+                }
+            ), 409
+
+        if (
+            operation.get("status")
+            != "waiting_for_tape"
+        ):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Only an archive waiting to start "
+                        "can be discarded."
+                    ),
+                }
+            ), 409
+
+        if ACTIVE_TAPE_OPERATION_ID:
+            return jsonify(
+                {
+                    "success": False,
+                    "busy": True,
+                    "error": (
+                        "A tape operation is currently active."
+                    ),
+                }
+            ), 409
+
+        job_id = operation.get("job_id")
+        snapshot_value = operation.get(
+            "destination"
+        )
+
+        #
+        # Reserve this operation against archive-start while the
+        # database and snapshot cleanup are performed.
+        #
+        operation["status"] = "discarding"
+
+    if not job_id:
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is not None:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+
+        return jsonify(
+            {
+                "success": False,
+                "error": (
+                    "Prepared archive has no job ID."
+                ),
+            }
+        ), 409
+
+    try:
+        staging_root = Path(
+            get_setting(
+                "staging_directory",
+                "/mnt/tapebox/staging",
+            )
+        ).expanduser().resolve()
+
+        jobs_root = (
+            staging_root
+            / ".tapebox-jobs"
+        ).resolve()
+
+        snapshot_path = Path(
+            snapshot_value
+        ).expanduser().resolve()
+
+        if (
+            snapshot_path == jobs_root
+            or jobs_root not in snapshot_path.parents
+        ):
+            raise ValueError(
+                "Prepared archive snapshot is outside "
+                "the TapeBox job directory."
+            )
+
+        #
+        # This existing helper is the authoritative safety gate:
+        # pending jobs are removable only when bytes_written == 0
+        # and no cataloged files belong to the job.
+        #
+        remove_archive_job_history(
+            int(job_id)
+        )
+
+        shutil.rmtree(
+            snapshot_path,
+            ignore_errors=False,
+        )
+
+    except Exception as exc:
+        with OPERATION_STATE_LOCK:
+            operation = OPERATIONS.get(
+                operation_id
+            )
+
+            if operation is not None:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+                operation["message"] = str(
+                    exc
+                )
+
+        return jsonify(
+            {
+                "success": False,
+                "error": str(exc),
+            }
+        ), 409
+
+    with OPERATION_STATE_LOCK:
+        OPERATIONS.pop(
+            operation_id,
+            None,
+        )
+
+        if (
+            ACTIVE_TAPE_OPERATION_ID
+            == operation_id
+        ):
+            ACTIVE_TAPE_OPERATION_ID = None
+
+    return jsonify(
+        {
+            "success": True,
+            "job_id": int(job_id),
+            "message": (
+                "Prepared archive discarded. "
+                "Original staging files were not deleted."
+            ),
+        }
+    )
+
+
+@app.route(
     "/api/operations/<operation_id>/archive-start",
     methods=["POST"],
 )
@@ -5903,6 +6165,14 @@ def archive_operation_start_api(
         operation["message"] = (
             "Starting archive..."
         )
+
+        operation["messages"] = [
+            message
+            for message in operation["messages"]
+            if message
+            != "Waiting for a tape cartridge."
+        ]
+
         operation["messages"].append(
             "Tape is online. Starting archive..."
         )

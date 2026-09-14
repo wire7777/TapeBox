@@ -444,6 +444,68 @@ def get_tape_status(
 
     return status
 
+def get_tape_partition_capacity(
+    sg_device="/dev/tapebox-drive-sg",
+    partition=1,
+):
+    """
+    Read physical tape partition capacity from MAM.
+
+    Returns maximum and remaining capacity in bytes.
+    sg_read_attr performs a SCSI READ ATTRIBUTE command.
+    """
+    result = run_command(
+        [
+            "sg_read_attr",
+            f"--partition={int(partition)}",
+            str(sg_device),
+        ],
+        timeout=15,
+    )
+
+    if result["returncode"] != 0:
+        return {
+            "success": False,
+            "error": (
+                result["stderr"]
+                or result["stdout"]
+                or "Could not read tape capacity."
+            ),
+        }
+
+    text = result["stdout"]
+
+    remaining_match = re.search(
+        r"Remaining capacity in partition \[MiB\]:\s*(\d+)",
+        text,
+        re.IGNORECASE,
+    )
+
+    maximum_match = re.search(
+        r"Maximum capacity in partition \[MiB\]:\s*(\d+)",
+        text,
+        re.IGNORECASE,
+    )
+
+    if not remaining_match or not maximum_match:
+        return {
+            "success": False,
+            "error": "Tape capacity attributes were not returned.",
+        }
+
+    mib = 1024 * 1024
+    remaining_bytes = int(remaining_match.group(1)) * mib
+    maximum_bytes = int(maximum_match.group(1)) * mib
+
+    return {
+        "success": True,
+        "partition": int(partition),
+        "remaining_bytes": remaining_bytes,
+        "maximum_bytes": maximum_bytes,
+        "used_bytes": max(0, maximum_bytes - remaining_bytes),
+    }
+
+
 def _is_mounted(mount_path):
     """
     Return True if the LTFS inspection mountpoint is active.
@@ -462,7 +524,7 @@ def _is_mounted(mount_path):
 
 def _wait_for_ltfs_release(
     mount_path,
-    timeout=60.0,
+    timeout=180.0,
     poll_interval=0.25,
 ):
     """
@@ -475,8 +537,10 @@ def _wait_for_ltfs_release(
         Path(mount_path)
     )
 
+    started = time.monotonic()
+
     deadline = (
-        time.monotonic()
+        started
         + timeout
     )
 
@@ -510,6 +574,16 @@ def _wait_for_ltfs_release(
                 break
 
         if not ltfs_running:
+            elapsed = (
+                time.monotonic()
+                - started
+            )
+
+            print(
+                "LTFS release completed after "
+                f"{elapsed:.1f} seconds"
+            )
+
             return True, None
 
         time.sleep(
@@ -571,7 +645,8 @@ def _unmount_ltfs(mount_path):
 
     #
     # Do not report success merely because FUSE has removed
-    # the mount. LTFS may still own /dev/sg0 for a short time.
+    # the mount. LTFS may still be releasing the underlying
+    # tape device for a while.
     #
     return _wait_for_ltfs_release(
         mount_path
@@ -613,7 +688,7 @@ def get_ltfs_virtual_attribute(
 
 
 def inspect_ltfs(
-    sg_device="/dev/sg0",
+    sg_device="/dev/tapebox-drive-sg",
     mountpoint="/mnt/tapebox/ltfs-inspect",
 ):
     """
@@ -847,11 +922,11 @@ def eject_tape(
         }
 
     #
-    # mt offline may return before the drive has completely
-    # finished its mechanical unload/eject cycle.
+    # mt offline unloads the cartridge from the tape path, but on
+    # some drives it does not physically present/eject the cartridge.
     #
-    # Do not report the eject as complete until the tape driver
-    # reports DR_OPEN. This also prevents a following load command
+    # Wait for DR_OPEN so the unload is complete before issuing the
+    # SCSI eject command. This also prevents a following load command
     # from racing the previous unload operation.
     #
     settle_deadline = time.monotonic() + 60.0
@@ -878,9 +953,62 @@ def eject_tape(
             status_result.get("returncode") == 0
             and "DR_OPEN" in last_status_text
         ):
+            sg_device = None
+            resolved_device = str(
+                Path(device).resolve()
+            )
+
+            for drive in discover_drives():
+                nst_device = drive.get(
+                    "nst_device"
+                )
+
+                if not nst_device:
+                    continue
+
+                if str(
+                    Path(nst_device).resolve()
+                ) == resolved_device:
+                    sg_device = drive.get(
+                        "sg_device"
+                    )
+                    break
+
+            if not sg_device:
+                return {
+                    "success": False,
+                    "device": device,
+                    "error": (
+                        "Could not resolve the matching "
+                        "SCSI generic tape device."
+                    ),
+                }
+
+            eject_result = run_command(
+                [
+                    "sg_start",
+                    "--eject",
+                    sg_device,
+                ],
+                timeout=60,
+            )
+
+            if eject_result.get("returncode") != 0:
+                return {
+                    "success": False,
+                    "device": device,
+                    "sg_device": sg_device,
+                    "error": (
+                        eject_result.get("stderr")
+                        or eject_result.get("stdout")
+                        or "SCSI physical eject failed."
+                    ),
+                }
+
             return {
                 "success": True,
                 "device": device,
+                "sg_device": sg_device,
             }
 
         time.sleep(1.0)
@@ -985,7 +1113,7 @@ def load_tape(
 
 
 def mount_ltfs_inspector(
-    sg_device="/dev/sg0",
+    sg_device="/dev/tapebox-drive-sg",
     mountpoint="/mnt/tapebox/ltfs-inspect",
 ):
     """
@@ -1356,7 +1484,7 @@ def format_ltfs(
 
 
 def scan_ltfs_files(
-    sg_device="/dev/sg0",
+    sg_device="/dev/tapebox-drive-sg",
     mountpoint="/mnt/tapebox/ltfs-import-existing",
 ):
     """

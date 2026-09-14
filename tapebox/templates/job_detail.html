@@ -904,7 +904,47 @@ Job #{{ job["id"] }} · TapeBox
 
         const transfer = operation.transfer;
 
-        if (transfer) {
+        const activityType =
+            operation.activity_type || null;
+
+        const driveActivityTypes =
+            new Set(
+                [
+                    "drive_waiting",
+                    "drive_ready",
+                    "mounting",
+                    "mounted",
+                    "unmounting",
+                    "ejecting"
+                ]
+            );
+
+        const driveWorking =
+            operation.status === "running"
+            && driveActivityTypes.has(
+                activityType
+            );
+
+        if (driveWorking) {
+            bar.classList.add(
+                "tapebox-progress-indeterminate"
+            );
+
+            percent.textContent =
+                "Working...";
+
+            written.textContent = "-";
+            speed.textContent = "-";
+            eta.textContent = "-";
+            part.textContent = "-";
+
+        } else {
+            bar.classList.remove(
+                "tapebox-progress-indeterminate"
+            );
+        }
+
+        if (transfer && !driveWorking) {
             const pct = Math.max(
                 0,
                 Math.min(
@@ -980,6 +1020,10 @@ Job #{{ job["id"] }} · TapeBox
                 operation.status
                 === "completed"
             ) {
+                bar.classList.remove(
+                    "tapebox-progress-indeterminate"
+                );
+
                 bar.style.width = "100%";
                 percent.textContent = "100%";
             }
