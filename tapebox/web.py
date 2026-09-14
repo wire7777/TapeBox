@@ -5257,25 +5257,34 @@ def _planner_media():
                     ):
                         source = "loaded_cartridge"
 
-                        sg_device = drives[0].get(
-                            "sg_device"
+                        #
+                        # Planner usage must represent TapeBox
+                        # logical data, not MAM/LTFS capacity
+                        # telemetry.  A completed cartridge probe
+                        # identifies the loaded tape by LTFS UUID
+                        # and exposes SQLite's authoritative
+                        # catalog used_bytes value.
+                        #
+                        cartridge = (
+                            _cartridge_status_snapshot()
                         )
 
-                        if sg_device:
-                            partition_capacity = (
-                                get_tape_partition_capacity(
-                                    sg_device=sg_device,
-                                    partition=1,
+                        if (
+                            cartridge
+                            and cartridge.get("state")
+                            == "known_cataloged"
+                            and cartridge.get("cataloged")
+                        ):
+                            catalog_used = (
+                                cartridge.get(
+                                    "catalog_used_bytes"
                                 )
                             )
 
-                            if partition_capacity.get(
-                                "success"
-                            ):
-                                physical_used_bytes = (
-                                    partition_capacity.get(
-                                        "used_bytes"
-                                    )
+                            if catalog_used is not None:
+                                physical_used_bytes = max(
+                                    0,
+                                    int(catalog_used),
                                 )
 
     except Exception:
