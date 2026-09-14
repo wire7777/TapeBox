@@ -1,5 +1,6 @@
 import argparse
 import ipaddress
+import re
 import os
 import secrets
 import subprocess
@@ -36,6 +37,7 @@ from tapebox.database import (
     get_archive_restore_plan,
     get_tape_by_id,
     get_tape_by_uuid,
+    get_tape_by_label,
     update_tape_catalog_metadata,
     register_existing_ltfs_tape,
     import_existing_tape_files,
@@ -123,11 +125,384 @@ OPERATIONS = {}
 ACTIVE_TAPE_OPERATION_ID = None
 
 #
+# Read-only identification cache for the cartridge currently
+# loaded in the physical tape drive.  LTFS inspection requires
+# mounting and unmounting the cartridge, so it must not run on
+# every /api/tape/status poll.
+#
+CARTRIDGE_STATUS_LOCK = threading.Lock()
+CARTRIDGE_STATUS_CACHE = None
+CARTRIDGE_STATUS_PROBE_ACTIVE = False
+
+
+#
 # Synchronous system/maintenance work that does not necessarily
 # own the physical tape drive. Shutdown is blocked while anything
 # is registered here.
 #
 ACTIVE_MAINTENANCE_OPERATIONS = set()
+
+
+def _generation_number(value):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    if text.isdigit():
+        return int(text)
+
+    match = re.search(
+        r"LTO-(\d+)",
+        text,
+        re.IGNORECASE,
+    )
+
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def _clear_cartridge_status_cache():
+    global CARTRIDGE_STATUS_CACHE
+    global CARTRIDGE_STATUS_PROBE_ACTIVE
+
+    with CARTRIDGE_STATUS_LOCK:
+        CARTRIDGE_STATUS_CACHE = None
+        CARTRIDGE_STATUS_PROBE_ACTIVE = False
+
+
+def _cartridge_status_snapshot():
+    with CARTRIDGE_STATUS_LOCK:
+        if CARTRIDGE_STATUS_CACHE is None:
+            return None
+
+        return dict(
+            CARTRIDGE_STATUS_CACHE
+        )
+
+
+
+def _apply_cartridge_usage_comparison(result):
+    """
+    Capacity telemetry from MAM and LTFS disk_usage does not
+    represent the logical sum of files stored on the cartridge.
+
+    Catalog reconciliation therefore requires the read-only
+    physical/manifest/catalog audit instead of capacity values.
+    """
+    result["catalog_usage_difference_bytes"] = None
+    result["catalog_usage_difference_abs_bytes"] = None
+    result["catalog_usage_tolerance_bytes"] = None
+    result["catalog_usage_mismatch"] = False
+    result["catalog_usage_comparison_available"] = False
+    result["catalog_usage_comparison_source"] = (
+        "three_way_audit"
+    )
+
+
+def _probe_loaded_cartridge(
+    nst_device,
+    sg_device="/dev/tapebox-drive-sg",
+):
+    """
+    Perform one read-only identification pass for the loaded cartridge.
+
+    This may mount LTFS read-only, so callers must ensure the tape drive
+    is idle before invoking it.
+    """
+    result = {
+        "loaded": True,
+        "ready": True,
+        "state": "unknown",
+        "ltfs": False,
+        "label": None,
+        "ltfs_uuid": None,
+        "barcode": None,
+        "generation": None,
+        "capacity_bytes": None,
+        "used_bytes": None,
+        "free_bytes": None,
+        "capacity_source": None,
+        "ltfs_capacity_bytes": None,
+        "ltfs_used_bytes": None,
+        "ltfs_free_bytes": None,
+        "cataloged": False,
+        "catalog_tape_id": None,
+        "catalog_label": None,
+        "catalog_uuid": None,
+        "catalog_used_bytes": None,
+        "label_conflict": False,
+        "error": None,
+    }
+
+    tape_status = get_tape_status(
+        nst_device
+    )
+
+    result["generation"] = _generation_number(
+        tape_status.get("density")
+    )
+
+    if (
+        not tape_status.get("available")
+        or not tape_status.get("online")
+    ):
+        result["loaded"] = False
+        result["ready"] = False
+        result["state"] = "no_cartridge"
+        result["error"] = tape_status.get(
+            "error"
+        )
+        return result
+
+    capacity = get_tape_partition_capacity(
+        sg_device=sg_device,
+        partition=1,
+    )
+
+    if capacity.get("success"):
+        result["capacity_bytes"] = (
+            capacity.get("maximum_bytes")
+        )
+        result["used_bytes"] = (
+            capacity.get("used_bytes")
+        )
+        result["free_bytes"] = (
+            capacity.get("remaining_bytes")
+        )
+        result["capacity_source"] = "mam"
+
+    ltfs_info = inspect_ltfs(
+        sg_device=sg_device
+    )
+
+    if not ltfs_info.get("ltfs"):
+        result["state"] = "non_ltfs_or_unreadable"
+        result["error"] = ltfs_info.get(
+            "error"
+        )
+        return result
+
+    result["ltfs"] = True
+    result["label"] = ltfs_info.get(
+        "label"
+    )
+    result["ltfs_uuid"] = ltfs_info.get(
+        "uuid"
+    )
+    result["barcode"] = ltfs_info.get(
+        "barcode"
+    )
+
+    #
+    # Capacity telemetry reported by the mounted LTFS
+    # filesystem. These values do not represent the logical
+    # sum of files stored on the cartridge and must not be
+    # used for catalog reconciliation.
+    #
+    result["ltfs_capacity_bytes"] = (
+        ltfs_info.get("capacity_bytes")
+    )
+    result["ltfs_used_bytes"] = (
+        ltfs_info.get("used_bytes")
+    )
+    result["ltfs_free_bytes"] = (
+        ltfs_info.get("free_bytes")
+    )
+
+    if result["capacity_source"] is None:
+        result["capacity_bytes"] = (
+            ltfs_info.get("capacity_bytes")
+        )
+        result["used_bytes"] = (
+            ltfs_info.get("used_bytes")
+        )
+        result["free_bytes"] = (
+            ltfs_info.get("free_bytes")
+        )
+        result["capacity_source"] = "ltfs"
+
+    catalog_tape = None
+
+    if result["ltfs_uuid"]:
+        catalog_tape = get_tape_by_uuid(
+            result["ltfs_uuid"]
+        )
+
+    label_match = None
+
+    if result["label"]:
+        label_match = get_tape_by_label(
+            result["label"]
+        )
+
+    if catalog_tape is not None:
+        catalog_row = dict(
+            catalog_tape
+        )
+
+        result["state"] = "known_cataloged"
+        result["cataloged"] = True
+        result["catalog_tape_id"] = (
+            catalog_row.get("id")
+        )
+        result["catalog_label"] = (
+            catalog_row.get("label")
+        )
+        result["catalog_uuid"] = (
+            catalog_row.get("ltfs_uuid")
+        )
+        result["catalog_used_bytes"] = (
+            catalog_row.get("used_bytes")
+        )
+
+        _apply_cartridge_usage_comparison(result)
+
+        return result
+
+    if label_match is not None:
+        catalog_row = dict(
+            label_match
+        )
+
+        catalog_uuid = catalog_row.get(
+            "ltfs_uuid"
+        )
+
+        if (
+            result["ltfs_uuid"]
+            and catalog_uuid
+            and str(result["ltfs_uuid"]).strip()
+            != str(catalog_uuid).strip()
+        ):
+            result["state"] = "label_conflict"
+            result["label_conflict"] = True
+        else:
+            result["state"] = "catalog_label_match_unbound"
+
+        result["catalog_tape_id"] = (
+            catalog_row.get("id")
+        )
+        result["catalog_label"] = (
+            catalog_row.get("label")
+        )
+        result["catalog_uuid"] = (
+            catalog_uuid
+        )
+        result["catalog_used_bytes"] = (
+            catalog_row.get("used_bytes")
+        )
+
+        _apply_cartridge_usage_comparison(result)
+
+        return result
+
+    result["state"] = "unregistered_ltfs"
+
+    return result
+
+
+
+def _cartridge_probe_worker(
+    nst_device,
+    sg_device,
+):
+    global ACTIVE_TAPE_OPERATION_ID
+    global CARTRIDGE_STATUS_CACHE
+    global CARTRIDGE_STATUS_PROBE_ACTIVE
+
+    probe_id = "cartridge-status-probe"
+
+    try:
+        result = _probe_loaded_cartridge(
+            nst_device=nst_device,
+            sg_device=sg_device,
+        )
+
+        with CARTRIDGE_STATUS_LOCK:
+            CARTRIDGE_STATUS_CACHE = dict(
+                result
+            )
+
+    except Exception as exc:
+        with CARTRIDGE_STATUS_LOCK:
+            CARTRIDGE_STATUS_CACHE = {
+                "loaded": True,
+                "ready": True,
+                "state": "probe_error",
+                "ltfs": False,
+                "error": str(exc),
+            }
+
+    finally:
+        with CARTRIDGE_STATUS_LOCK:
+            CARTRIDGE_STATUS_PROBE_ACTIVE = False
+
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == probe_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+
+def _start_cartridge_status_probe(
+    nst_device,
+    sg_device="/dev/tapebox-drive-sg",
+):
+    global ACTIVE_TAPE_OPERATION_ID
+    global CARTRIDGE_STATUS_PROBE_ACTIVE
+
+    probe_id = "cartridge-status-probe"
+
+    with CARTRIDGE_STATUS_LOCK:
+        if CARTRIDGE_STATUS_PROBE_ACTIVE:
+            return False
+
+        if CARTRIDGE_STATUS_CACHE is not None:
+            return False
+
+        CARTRIDGE_STATUS_PROBE_ACTIVE = True
+
+    with OPERATION_STATE_LOCK:
+        if ACTIVE_TAPE_OPERATION_ID:
+            with CARTRIDGE_STATUS_LOCK:
+                CARTRIDGE_STATUS_PROBE_ACTIVE = False
+
+            return False
+
+        ACTIVE_TAPE_OPERATION_ID = probe_id
+
+    worker = threading.Thread(
+        target=_cartridge_probe_worker,
+        args=(
+            nst_device,
+            sg_device,
+        ),
+        daemon=True,
+        name="tapebox-cartridge-status",
+    )
+
+    try:
+        worker.start()
+
+    except Exception:
+        with OPERATION_STATE_LOCK:
+            if (
+                ACTIVE_TAPE_OPERATION_ID
+                == probe_id
+            ):
+                ACTIVE_TAPE_OPERATION_ID = None
+
+        with CARTRIDGE_STATUS_LOCK:
+            CARTRIDGE_STATUS_PROBE_ACTIVE = False
+
+        raise
+
+    return True
+
 
 
 def _begin_maintenance_operation(name):
@@ -1931,8 +2306,47 @@ def tape_status_api():
 
     if (
         active_operation_id
+        == "cartridge-status-probe"
+    ):
+        cartridge = _cartridge_status_snapshot()
+
+        if cartridge is None:
+            cartridge = {
+                "loaded": True,
+                "ready": True,
+                "state": "probing",
+                "ltfs": None,
+                "cataloged": None,
+                "error": None,
+            }
+
+        return jsonify(
+            {
+                "success": True,
+                "detected": True,
+                "online": True,
+                "available": True,
+                "mounted": False,
+                "busy": False,
+                "drive": drive.get(
+                    "description",
+                    "Tape Drive",
+                ),
+                "device": nst_device,
+                "density": None,
+                "write_protected": False,
+                "beginning_of_tape": False,
+                "state": "probing",
+                "cartridge": cartridge,
+            }
+        )
+
+    if (
+        active_operation_id
         and active_operation_id != "inspector"
     ):
+        _clear_cartridge_status_cache()
+
         return jsonify(
             {
                 "success": True,
@@ -1974,6 +2388,38 @@ def tape_status_api():
         online = True
         available = True
 
+    cartridge = _cartridge_status_snapshot()
+
+    if not inspector_mounted:
+        if online and available:
+            if cartridge is None:
+                started = _start_cartridge_status_probe(
+                    nst_device=nst_device,
+                )
+
+                if started:
+                    cartridge = {
+                        "loaded": True,
+                        "ready": True,
+                        "state": "probing",
+                        "ltfs": None,
+                        "cataloged": None,
+                        "error": None,
+                    }
+        else:
+            _clear_cartridge_status_cache()
+
+            cartridge = {
+                "loaded": False,
+                "ready": False,
+                "state": "no_cartridge",
+                "ltfs": False,
+                "cataloged": False,
+                "error": status.get(
+                    "error"
+                ),
+            }
+
     return jsonify(
         {
             "success": True,
@@ -2002,6 +2448,7 @@ def tape_status_api():
             "error": status.get(
                 "error"
             ),
+            "cartridge": cartridge,
         }
     )
 
