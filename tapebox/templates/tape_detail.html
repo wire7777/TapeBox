@@ -30,7 +30,14 @@
 
         <div class="stat-value small">
             {% if tape["generation"] %}
-                LTO-{{ tape["generation"] }}
+                {% set generation =
+                    tape["generation"] | string
+                %}
+                {% if generation.upper().startswith("LTO-") %}
+                    {{ generation }}
+                {% else %}
+                    LTO-{{ generation }}
+                {% endif %}
             {% else %}
                 -
             {% endif %}

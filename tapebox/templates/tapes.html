@@ -84,10 +84,13 @@ Tapes · TapeBox
 
                 <td>
                     {% if tape["generation"] %}
-                        {% if tape["generation"] | string | upper | truncate(4, true, '') == "LTO-" %}
-                            {{ tape["generation"] }}
+                        {% set generation =
+                            tape["generation"] | string
+                        %}
+                        {% if generation.upper().startswith("LTO-") %}
+                            {{ generation }}
                         {% else %}
-                            LTO-{{ tape["generation"] }}
+                            LTO-{{ generation }}
                         {% endif %}
                     {% else %}
                         -

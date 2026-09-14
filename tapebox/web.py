@@ -4675,6 +4675,40 @@ def _planner_media():
     Prefer the currently loaded cartridge. If no usable
     generation can be detected, fall back to LTO-6.
     """
+    test_usable = os.environ.get(
+        "TAPEBOX_TEST_USABLE_BYTES"
+    )
+
+    if test_usable:
+        try:
+            test_capacity = int(
+                test_usable
+            )
+        except ValueError:
+            raise RuntimeError(
+                "TAPEBOX_TEST_USABLE_BYTES "
+                "must be an integer."
+            )
+
+        if test_capacity <= 0:
+            raise RuntimeError(
+                "TAPEBOX_TEST_USABLE_BYTES "
+                "must be greater than zero."
+            )
+
+        return {
+            "generation": (
+                ARCHIVE_PLANNER_DEFAULT_GENERATION
+            ),
+            "generation_name": (
+                f"LTO-"
+                f"{ARCHIVE_PLANNER_DEFAULT_GENERATION}"
+            ),
+            "capacity_bytes": test_capacity,
+            "source": "test_override",
+            "physical_used_bytes": 0,
+        }
+
     generation = None
     source = "default"
     physical_used_bytes = None
