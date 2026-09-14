@@ -616,7 +616,11 @@
             } else {
                 statusElement.innerHTML =
                     "<strong>Drive status:</strong> "
-                    + "Waiting for cartridge to become ready...";
+                    + (
+                        statusOnly
+                        ? "No cartridge loaded."
+                        : "Waiting for cartridge to become ready..."
+                    );
 
                 if (!statusOnly) {
                     startButton.disabled = true;
@@ -856,7 +860,7 @@
                 </div>
             `;
 
-        } else if (transfer) {
+        } else if (transfer && operation.status !== "completed") {
             const copied =
                 Number(
                     transfer.bytes_written

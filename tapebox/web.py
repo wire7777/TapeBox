@@ -729,43 +729,55 @@ def _archive_staging_worker(
             operation["result"] = result
 
             #
-            # Folder jobs may successfully stop because another
-            # cartridge is required. That is not a failure.
+            # Requiring another cartridge is a normal resumable
+            # archive state, even when the archive engine returns
+            # success=False for an already-used cartridge.
             #
-            if result.get("success"):
-                if (
-                    result.get(
-                        "completed"
-                    ) is False
-                    or result.get(
-                        "waiting_for_tape",
-                        False,
-                    )
-                    or result.get("status")
-                    == "waiting_for_tape"
-                ):
-                    operation["status"] = (
-                        "waiting_for_tape"
-                    )
+            tape_change_required = (
+                result.get("needs_next_tape", False)
+                or result.get(
+                    "waiting_for_tape",
+                    False,
+                )
+                or result.get("status")
+                == "waiting_for_tape"
+                or (
+                    result.get("success")
+                    and result.get("completed") is False
+                )
+            )
 
+            if tape_change_required:
+                operation["status"] = (
+                    "waiting_for_tape"
+                )
+
+                if result.get("same_tape"):
+                    operation["message"] = (
+                        "This cartridge has already been "
+                        "used for this archive job. "
+                        "Insert a different cartridge, "
+                        "then click Continue Archive."
+                    )
+                else:
                     operation["message"] = (
                         "Insert the next cartridge "
                         "to continue the archive."
                     )
 
-                else:
-                    operation["status"] = (
-                        "completed"
-                    )
+            elif result.get("success"):
+                operation["status"] = (
+                    "completed"
+                )
 
-                    operation["message"] = (
-                        "Archive complete."
-                        if auto_eject
-                        else (
-                            "Archive complete. "
-                            "Cartridge left loaded by request."
-                        )
+                operation["message"] = (
+                    "Archive complete."
+                    if auto_eject
+                    else (
+                        "Archive complete. "
+                        "Cartridge left loaded by request."
                     )
+                )
 
             else:
                 operation["status"] = "failed"
