@@ -484,7 +484,9 @@
     }
 
 
-    async function updateDriveReadiness() {
+    async function updateDriveReadiness(
+        statusOnly = false
+    ) {
         if (driveReadinessTimer) {
             clearTimeout(
                 driveReadinessTimer
@@ -500,7 +502,10 @@
          */
         if (
             activeOperationId
-            || restoreCompleted
+            || (
+                restoreCompleted
+                && !statusOnly
+            )
         ) {
             return;
         }
@@ -533,7 +538,10 @@
 
             if (
                 activeOperationId
-                || restoreCompleted
+                || (
+                    restoreCompleted
+                    && !statusOnly
+                )
             ) {
                 return;
             }
@@ -567,44 +575,54 @@
                     "<strong>Drive status:</strong> "
                     + "Tape drive is currently in use.";
 
-                startButton.disabled = true;
-                startButton.textContent =
-                    "Drive In Use...";
+                if (!statusOnly) {
+                    startButton.disabled = true;
+                    startButton.textContent =
+                        "Drive In Use...";
+                }
 
             } else if (ready) {
                 statusElement.innerHTML =
                     "<strong>Drive status:</strong> Drive ready.";
 
-                startButton.disabled = false;
-                startButton.textContent =
-                    "Start Restore";
+                if (!statusOnly) {
+                    startButton.disabled = false;
+                    startButton.textContent =
+                        "Start Restore";
+                }
 
             } else if (!data.detected) {
                 statusElement.innerHTML =
                     "<strong>Drive status:</strong> "
                     + "Tape drive not detected.";
 
-                startButton.disabled = true;
-                startButton.textContent =
-                    "Waiting for Drive...";
+                if (!statusOnly) {
+                    startButton.disabled = true;
+                    startButton.textContent =
+                        "Waiting for Drive...";
+                }
 
             } else if (data.mounted) {
                 statusElement.innerHTML =
                     "<strong>Drive status:</strong> "
                     + "Tape drive is currently in use.";
 
-                startButton.disabled = true;
-                startButton.textContent =
-                    "Drive In Use...";
+                if (!statusOnly) {
+                    startButton.disabled = true;
+                    startButton.textContent =
+                        "Drive In Use...";
+                }
 
             } else {
                 statusElement.innerHTML =
                     "<strong>Drive status:</strong> "
                     + "Waiting for cartridge to become ready...";
 
-                startButton.disabled = true;
-                startButton.textContent =
-                    "Waiting for Tape...";
+                if (!statusOnly) {
+                    startButton.disabled = true;
+                    startButton.textContent =
+                        "Waiting for Tape...";
+                }
             }
 
         } catch (error) {
@@ -612,9 +630,11 @@
                 "<strong>Drive status:</strong> "
                 + "Unable to read drive status.";
 
-            startButton.disabled = true;
-            startButton.textContent =
-                "Drive Status Error";
+            if (!statusOnly) {
+                startButton.disabled = true;
+                startButton.textContent =
+                    "Drive Status Error";
+            }
         }
 
         if (!activeOperationId) {
@@ -668,6 +688,22 @@
             return;
         }
 
+        const searchCard =
+            document.getElementById(
+                "files-search-card"
+            );
+
+        if (searchCard) {
+            const restoreActive =
+                operation.status !== "completed"
+                && operation.status !== "failed";
+
+            searchCard.style.display =
+                restoreActive
+                ? "none"
+                : "";
+        }
+
         const startButton =
             document.getElementById(
                 "files-start-restore-button"
@@ -686,9 +722,28 @@
                 operation.status
                 === "waiting_for_tape"
             ) {
+                const waitingTapes =
+                    Array.isArray(
+                        operation.result?.required_tapes
+                    )
+                    ? operation.result.required_tapes
+                    : [];
+
+                const waitingTapeLabel =
+                    waitingTapes.length
+                    ? (
+                        waitingTapes[0].label
+                        ?? waitingTapes[0].tape_label
+                        ?? waitingTapes[0].ltfs_uuid
+                        ?? waitingTapes[0]
+                    )
+                    : null;
+
                 startButton.disabled = true;
                 startButton.textContent =
-                    "Waiting for Tape...";
+                    waitingTapeLabel
+                    ? `Waiting for ${waitingTapeLabel}...`
+                    : "Waiting for Tape...";
 
             } else if (
                 operation.status
@@ -732,6 +787,40 @@
                 activityType
             );
 
+        const transferBytesWritten =
+            transfer
+            ? Number(
+                transfer.bytes_written
+                ?? 0
+            )
+            : 0;
+
+        const progressIndeterminate =
+            operation.status !== "completed"
+            && operation.status !== "failed"
+            && operation.status !== "waiting_for_tape"
+            && (
+                driveWorking
+                || (
+                    operation.status === "starting"
+                    && transferBytesWritten <= 0
+                )
+                || (
+                    transfer
+                    && transferBytesWritten <= 0
+                )
+            );
+
+        /*
+         * Preserve the shared 900 ms stripe phase across
+         * status-poll DOM redraws.
+         */
+        const progressAnimationDelay =
+            -(Date.now() % 900);
+
+        const progressIndeterminateStyle =
+            `style="animation-delay: ${progressAnimationDelay}ms;"`;
+
         let transferHtml = "";
 
         if (driveWorking) {
@@ -761,6 +850,7 @@
                                 restore-progress-bar
                                 tapebox-progress-indeterminate
                             "
+                            ${progressIndeterminateStyle}
                         ></div>
                     </div>
                 </div>
@@ -899,10 +989,23 @@
                         style="margin-top: 8px;"
                     >
                         <div
-                            class="restore-progress-bar"
-                            style="
-                                width: ${clampedPercent}%;
+                            class="
+                                restore-progress-bar
+                                ${
+                                    progressIndeterminate
+                                    ? "tapebox-progress-indeterminate"
+                                    : ""
+                                }
                             "
+                            ${
+                                progressIndeterminate
+                                ? progressIndeterminateStyle
+                                : `
+                                    style="
+                                        width: ${clampedPercent}%;
+                                    "
+                                `
+                            }
                         ></div>
                     </div>
 
@@ -1069,10 +1172,23 @@
                     style="margin-top: 8px;"
                 >
                     <div
-                        class="restore-progress-bar"
-                        style="
-                            width: ${clampedOverallPercent}%;
+                        class="
+                            restore-progress-bar
+                            ${
+                                progressIndeterminate
+                                ? "tapebox-progress-indeterminate"
+                                : ""
+                            }
                         "
+                        ${
+                            progressIndeterminate
+                                ? progressIndeterminateStyle
+                                : `
+                                style="
+                                    width: ${clampedOverallPercent}%;
+                                "
+                            `
+                        }
                     ></div>
                 </div>
 
@@ -1148,19 +1264,42 @@
             === "waiting_for_tape"
             && requiredTapes.length
         ) {
+            const requiredTapeLabel =
+                requiredTapes[0].label
+                ?? requiredTapes[0].tape_label
+                ?? requiredTapes[0].ltfs_uuid
+                ?? requiredTapes[0];
+
             tapesHtml = `
                 <div
                     style="
-                        margin-top: 10px;
+                        margin-top: 14px;
+                        padding: 14px;
+                        border: 1px solid #3b82f6;
+                        background: rgba(59, 130, 246, 0.08);
+                        line-height: 1.6;
                     "
                 >
-                    <strong>Next required tape:</strong>
-                    ${escapeHtml(
-                        requiredTapes[0].label
-                        ?? requiredTapes[0].tape_label
-                        ?? requiredTapes[0].ltfs_uuid
-                        ?? requiredTapes[0]
-                    )}
+                    <div
+                        style="
+                            font-size: 18px;
+                            font-weight: 700;
+                            margin-bottom: 4px;
+                        "
+                    >
+                        INSERT TAPE:
+                        ${escapeHtml(requiredTapeLabel)}
+                    </div>
+
+                    <div>
+                        TapeBox is waiting for this cartridge.
+                        Insert
+                        <strong>
+                            ${escapeHtml(requiredTapeLabel)}
+                        </strong>
+                        into the tape drive, then click
+                        <strong>Continue Restore</strong>.
+                    </div>
                 </div>
 
                 <div
@@ -1489,6 +1628,14 @@
                 }
 
                 if (
+                    operation.status
+                    === "completed"
+                ) {
+                    updateDriveReadiness(
+                        true
+                    );
+
+                } else if (
                     operation.status
                     === "failed"
                 ) {
