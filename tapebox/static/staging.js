@@ -1893,25 +1893,58 @@ window.monitorTapeBoxArchiveOperation =
     );
 
 
-    zone.addEventListener(
-        "dragover",
-        (event) => {
-            event.preventDefault();
-        }
-    );
+    function dragIsOverUploadZone(event) {
+        return (
+            event.composedPath
+                ? event.composedPath().includes(zone)
+                : zone.contains(event.target)
+        );
+    }
 
 
-    zone.addEventListener(
+    for (const dragEvent of [
+        "dragenter",
+        "dragover"
+    ]) {
+        document.addEventListener(
+            dragEvent,
+            (event) => {
+                if (!dragIsOverUploadZone(event)) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (event.dataTransfer) {
+                    event.dataTransfer.dropEffect = "copy";
+                }
+            },
+            true
+        );
+    }
+
+
+    document.addEventListener(
         "drop",
         (event) => {
-            event.preventDefault();
+            if (!dragIsOverUploadZone(event)) {
+                return;
+            }
 
-            if (!uploadActive) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (
+                !uploadActive
+                && event.dataTransfer
+            ) {
                 uploadFiles(
                     event.dataTransfer.files
                 );
             }
-        }
+        },
+        true
     );
 })();
 
