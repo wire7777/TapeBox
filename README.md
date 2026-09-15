@@ -1,6 +1,6 @@
 # TapeBox
 
-**TapeBox v1.0 — Build 26.09.12**
+**TapeBox v1.0 — Build 26.09.14**
 
 **TapeBox is a simple web-based LTFS/LTO tape archive manager for Linux.**
 
